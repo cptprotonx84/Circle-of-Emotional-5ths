@@ -1,0 +1,6 @@
+{
+  "name": "NEURAL HARMONY SYSTEM of Emotional 5ths",
+  "description": "An interactive exploration of the relationship between musical keys, emotions, valence, and arousal, visualized through the Circle of Fifths.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
