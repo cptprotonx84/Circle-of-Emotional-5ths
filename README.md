@@ -28,6 +28,10 @@ This system is a self-contained exploration of harmonic resonance. It maps music
 - **Rules-Only Logic**: All "insights" and "analyses" are derived from the local `constants/insights.ts` engine and static mocks.
 - **Zero Cloud Dependencies**: No API calls are made to external services.
 
+## Credits
+- **Creator**: Nick Louthan
+- **Project Identity**: Nick Valence / NX-Valence Labs
+
 ## Known Issues
 - **Audio Analysis**: The "Audio Analysis" functionality is currently a placeholder/mock output and does not perform real-time signal processing. This will be implemented in a future release.
 
