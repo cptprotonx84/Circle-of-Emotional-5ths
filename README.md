@@ -28,6 +28,9 @@ This system is a self-contained exploration of harmonic resonance. It maps music
 - **Rules-Only Logic**: All "insights" and "analyses" are derived from the local `constants/insights.ts` engine and static mocks.
 - **Zero Cloud Dependencies**: No API calls are made to external services.
 
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 ## Credits
 - **Creator**: Nick Louthan
 - **Project Identity**: Nick Valence / NX-Valence Labs
