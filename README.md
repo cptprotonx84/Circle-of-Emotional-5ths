@@ -28,6 +28,9 @@ This system is a self-contained exploration of harmonic resonance. It maps music
 - **Rules-Only Logic**: All "insights" and "analyses" are derived from the local `constants/insights.ts` engine and static mocks.
 - **Zero Cloud Dependencies**: No API calls are made to external services.
 
+## Known Issues
+- **Audio Analysis**: The "Audio Analysis" functionality is currently a placeholder/mock output and does not perform real-time signal processing. This will be implemented in a future release.
+
 ## Build/Deploy
 - **Build**: `npm run build`
 - **Deploy**: The generated `dist/` folder is a standard static SPA. Serve via any static web server (Nginx, Apache, etc.) or deploy as a single-node Express container.
