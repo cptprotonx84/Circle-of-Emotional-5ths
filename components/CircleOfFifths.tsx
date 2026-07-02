@@ -18,7 +18,6 @@ const WaveformOverlay: React.FC<{ arousal: number, color: string, radius: number
   useEffect(() => {
     let animationFrameId: number;
     const animate = () => {
-      // Speed scales with arousal
       const speed = 0.03 + Math.abs(arousal) * 0.05;
       setPhase(prev => (prev + speed) % (Math.PI * 2));
       animationFrameId = requestAnimationFrame(animate);
@@ -28,7 +27,6 @@ const WaveformOverlay: React.FC<{ arousal: number, color: string, radius: number
   }, [arousal]);
 
   const numPoints = 150;
-  // Amplitude and frequency scale with arousal
   const amplitude = 4 + Math.abs(arousal) * 12;
   const frequency = 6 + Math.floor(Math.abs(arousal) * 8);
 
@@ -61,33 +59,29 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
   const radius = Math.min(width, height) / 2 - 40;
   const center = { x: width / 2, y: height / 2 };
 
-  // D3 Scales and Layout
   const pie = d3.pie<EmotionalKeyData>()
-    .value(1) // Equal slices
-    .sort((a, b) => a.keyPosition - b.keyPosition) // Ensure C is top then clockwise
-    .startAngle(-Math.PI / 2 + Math.PI / 12) // Rotate so C (index 1) is at top. Each slice is 30deg (PI/6). Center of C slice at -90deg.
+    .value(1)
+    .sort((a, b) => a.keyPosition - b.keyPosition)
+    .startAngle(-Math.PI / 2 + Math.PI / 12)
     .endAngle(1.5 * Math.PI + Math.PI / 12);
 
-  // Main arc generator for the background of slices
   const arcGenerator = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
     .innerRadius(radius * 0.55)
     .outerRadius(radius);
   
-  // Specific arc generator for the outer color ring to avoid passing custom radii to the datum
   const colorRingArc = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
     .innerRadius(radius * 0.92)
     .outerRadius(radius);
 
   const labelArc = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
-    .innerRadius(radius * 0.75)
-    .outerRadius(radius * 0.75);
+    .innerRadius(radius * 0.74)
+    .outerRadius(radius * 0.74);
 
   const arcs = useMemo(() => pie(data), [data]);
 
-  const activeId = hoveredId || selectedId;
-  const activeData = activeId ? data.find(d => d.id === activeId) : null;
+  const activeId = hoveredId ?? selectedId;
+  const activeData = activeId != null ? data.find(d => d.id === activeId) : null;
 
-  // Map gradient name to a solid color for the stroke
   const getStrokeColor = (gradient: string) => {
     if (gradient.includes('red')) return '#ef4444';
     if (gradient.includes('yellow')) return '#facc15';
@@ -101,7 +95,7 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
     if (gradient.includes('rose') && gradient.includes('crimson')) return '#be123c';
     if (gradient.includes('rose')) return '#fb7185';
     if (gradient.includes('dark_blue')) return '#1e3a8a';
-    return '#a855f7'; // default neonViolet
+    return '#a855f7';
   };
 
   return (
@@ -123,31 +117,21 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
           )}
 
           {/* Central Label */}
-          <circle r={radius * 0.5} className="fill-black stroke-neonViolet stroke-2 drop-shadow-[0_0_10px_rgba(208,0,255,0.5)]" />
-          <text textAnchor="middle" dy="0.3em" className="fill-hackerGreen text-sm font-bold tracking-[0.3em] pointer-events-none drop-shadow-[0_0_5px_#00ff41]">
-             {activeData ? activeData.musicalKey.split(' ')[0] : 'SELECT'}
+          <circle r={radius * 0.5} fill="#000000" />
+          <text x={0} y={-8} textAnchor="middle" dominantBaseline="middle" fill="#d1d5db" fontSize={24} fontWeight={900} style={{ letterSpacing: '0.08em' }}>
+            {activeData ? activeData.musicalKey.split(' ')[0] : '—'}
           </text>
-          {activeData && (
-             <text textAnchor="middle" dy="1.8em" className="fill-gray-500 text-[9px] uppercase tracking-widest pointer-events-none">
-               {activeData.musicalKey.includes('Minor') ? 'Minor' : 'Major'}
-             </text>
-          )}
+          <text x={0} y={15} textAnchor="middle" dominantBaseline="middle" fill="#9ca3af" fontSize={10} fontWeight={800} style={{ letterSpacing: '0.25em' }}>
+            {activeData ? (activeData.musicalKey.includes('Minor') ? 'MINOR' : 'MAJOR') : 'SELECT'}
+          </text>
 
           {/* Slices */}
           {arcs.map((slice) => {
-            // Logic determines which slice is visually "active"
             const isHovered = hoveredId === slice.data.id;
             const isSelected = selectedId === slice.data.id;
-            
-            // If user is hovering something, that thing is active.
-            // If user is NOT hovering anything, the selected thing is active.
             const isActive = isHovered || (hoveredId === null && isSelected);
-            
-            // Everything else is dimmed if there is an active state in play
             const isDimmed = (hoveredId !== null || selectedId !== null) && !isActive;
 
-            const [centroidX, centroidY] = labelArc.centroid(slice);
-            
             return (
               <motion.g 
                 key={slice.data.id} 
@@ -160,15 +144,10 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
               >
                 <motion.path
                   d={arcGenerator(slice) || undefined}
-                  className={`
-                    stroke-black stroke-[3px]
-                    ${isActive ? 'fill-[#00ff41]' : 'fill-[#0f172a] hover:fill-[#1e293b]'}
-                  `}
+                  className={`stroke-black stroke-[3px] ${isActive ? 'fill-[#00ff41]' : 'fill-[#1e293b] hover:fill-[#334155]'}`}
                   animate={{ scale: isActive ? 1.05 : 1 }}
                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
                 />
-                
-                {/* Visual Indicator of Color using dedicated arc generator */}
                 <motion.path
                    d={colorRingArc(slice) || undefined}
                    className={`
@@ -188,43 +167,50 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
                    animate={{ scale: isActive ? 1.05 : 1 }}
                    transition={{ type: "spring", stiffness: 300, damping: 20 }}
                 />
-
-                <motion.text
-                  transform={`translate(${centroidX}, ${centroidY})`}
-                  textAnchor="middle"
-                  dy="0.35em"
-                  className={`
-                    text-xs font-bold pointer-events-none transition-colors duration-300
-                    ${isActive ? 'fill-black' : 'fill-hackerGreen drop-shadow-[0_0_5px_#00ff41]'}
-                  `}
-                  animate={{ scale: isActive ? 1.1 : 1 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                >
-                  {slice.data.musicalKey.split(' ')[0]}
-                </motion.text>
-                
-                {/* Minor/Major Indicator Subtext */}
-                <motion.text
-                   transform={`translate(${centroidX}, ${centroidY + 12})`}
-                   textAnchor="middle"
-                   className={`text-[8px] pointer-events-none uppercase ${isActive ? 'fill-gray-800' : 'fill-neonViolet drop-shadow-[0_0_2px_#D000FF]'}`}
-                   animate={{ scale: isActive ? 1.1 : 1 }}
-                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                >
-                   {slice.data.musicalKey.includes('Minor') ? 'min' : 'maj'}
-                </motion.text>
-
-                {/* Emotion Note Text */}
-                <motion.text
-                   transform={`translate(${centroidX}, ${centroidY + 24})`}
-                   textAnchor="middle"
-                   className={`text-[6px] pointer-events-none uppercase tracking-wider ${isActive ? 'fill-black/60 font-bold' : 'fill-gray-500'}`}
-                   animate={{ scale: isActive ? 1.1 : 1, opacity: isActive ? 1 : 0.4 }}
-                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                >
-                   {slice.data.emotion}
-                </motion.text>
               </motion.g>
+            );
+          })}
+
+          {/* Top Label Layer */}
+          {arcs.map((slice) => {
+            const isHovered = hoveredId === slice.data.id;
+            const isSelected = selectedId === slice.data.id;
+            const isActive = isHovered || (hoveredId === null && isSelected);
+
+            const [x, y] = labelArc.centroid(slice);
+            const keyRoot = slice.data.musicalKey.split(' ')[0];
+            const mode = slice.data.musicalKey.includes('Minor') ? 'MIN' : 'MAJ';
+
+            return (
+              <g key={`label-${slice.data.id}`} pointerEvents="none">
+                <text
+                  x={x}
+                  y={y - 6}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill={isActive ? '#020617' : '#9ca3af'}
+                  fontSize={16}
+                  fontWeight={900}
+                  style={{
+                    filter: isActive ? 'none' : 'drop-shadow(0 0 4px #00ff41)',
+                    letterSpacing: '0.04em'
+                  }}
+                >
+                  {keyRoot}
+                </text>
+                <text
+                  x={x}
+                  y={y + 10}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fill={isActive ? '#111827' : '#6b7280'}
+                  fontSize={7}
+                  fontWeight={700}
+                  style={{ letterSpacing: '0.08em' }}
+                >
+                  {mode}
+                </text>
+              </g>
             );
           })}
         </g>
