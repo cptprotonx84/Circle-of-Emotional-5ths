@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { EMOTIONAL_KEYS } from '../constants';
 import CircleOfFifths from './CircleOfFifths';
 import ValenceArousalChart from './ValenceArousalChart';
@@ -6,17 +6,16 @@ import EmotionDetail from './EmotionDetail';
 import GeminiInsight from './GeminiInsight';
 import Legend from './Legend';
 import CollapsibleSection from './CollapsibleSection';
-import { getNearestKey } from '../utils/emotionMath';
-import { EmotionState } from '../types';
+import { MusicalKeyId } from '../types';
 import { Circle, Target, Brain, Cpu, Activity } from 'lucide-react';
 
 interface EmoKeyAppProps {
-  externalSelection?: EmotionState | null;
+  selectedKeyId: MusicalKeyId;
+  onSelectedKeyChange: (id: MusicalKeyId) => void;
 }
 
-const EmoKeyApp: React.FC<EmoKeyAppProps> = ({ externalSelection }) => {
-  const [selectedId, setSelectedId] = useState<number | null>(1);
-  const [hoveredId, setHoveredId] = useState<number | null>(null);
+const EmoKeyApp: React.FC<EmoKeyAppProps> = ({ selectedKeyId, onSelectedKeyChange }) => {
+  const [hoveredId, setHoveredId] = useState<MusicalKeyId | null>(null);
   const [isResonating, setIsResonating] = useState<boolean>(false);
   
   // Toggle states
@@ -32,14 +31,7 @@ const EmoKeyApp: React.FC<EmoKeyAppProps> = ({ externalSelection }) => {
     setOpenSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  useEffect(() => {
-    if (externalSelection) {
-      const nearest = getNearestKey(externalSelection);
-      if (nearest) setSelectedId(nearest.id);
-    }
-  }, [externalSelection]);
-
-  const selectedData = selectedId ? EMOTIONAL_KEYS.find(k => k.id === selectedId) || null : null;
+  const selectedData = EMOTIONAL_KEYS.find(key => key.id === selectedKeyId) ?? null;
 
   return (
     <div className="w-full text-hackerGreen font-mono px-4 py-8 max-w-5xl mx-auto">
@@ -53,13 +45,13 @@ const EmoKeyApp: React.FC<EmoKeyAppProps> = ({ externalSelection }) => {
           <button onClick={() => setIsResonating(!isResonating)} className="mb-4 text-[9px] uppercase border border-gray-700 px-3 py-1 hover:border-neonViolet">
             Resonance: {isResonating ? 'ON' : 'OFF'}
           </button>
-          <CircleOfFifths data={EMOTIONAL_KEYS} selectedId={selectedId} hoveredId={hoveredId} isResonating={isResonating} onSelect={setSelectedId} onHover={setHoveredId} />
-          <Legend data={EMOTIONAL_KEYS} selectedId={selectedId} hoveredId={hoveredId} onSelect={setSelectedId} onHover={setHoveredId} />
+          <CircleOfFifths data={EMOTIONAL_KEYS} selectedId={selectedKeyId} hoveredId={hoveredId} isResonating={isResonating} onSelect={onSelectedKeyChange} onHover={setHoveredId} />
+          <Legend data={EMOTIONAL_KEYS} selectedId={selectedKeyId} hoveredId={hoveredId} onSelect={onSelectedKeyChange} onHover={setHoveredId} />
         </div>
       </CollapsibleSection>
 
       <CollapsibleSection title="Emotion Map" icon={Target} isOpen={openSections.map} onToggle={() => toggleSection('map')}>
-        <ValenceArousalChart data={EMOTIONAL_KEYS} selectedId={selectedId} onSelect={setSelectedId} />
+        <ValenceArousalChart data={EMOTIONAL_KEYS} selectedId={selectedKeyId} onSelect={onSelectedKeyChange} />
       </CollapsibleSection>
 
       <CollapsibleSection title="Transition Analyzer" icon={Activity} isOpen={openSections.analyzer} onToggle={() => toggleSection('analyzer')}>

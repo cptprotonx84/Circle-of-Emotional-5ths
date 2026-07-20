@@ -1,12 +1,12 @@
 import React from 'react';
-import { EmotionalKeyData } from '../types';
+import { EmotionalKeyData, MusicalKeyId } from '../types';
 
 interface LegendProps {
   data: EmotionalKeyData[];
-  selectedId: number | null;
-  hoveredId: number | null;
-  onHover: (id: number | null) => void;
-  onSelect: (id: number) => void;
+  selectedId: MusicalKeyId | null;
+  hoveredId: MusicalKeyId | null;
+  onHover: (id: MusicalKeyId | null) => void;
+  onSelect: (id: MusicalKeyId) => void;
 }
 
 const Legend: React.FC<LegendProps> = ({ data, selectedId, hoveredId, onHover, onSelect }) => {
@@ -32,6 +32,11 @@ const Legend: React.FC<LegendProps> = ({ data, selectedId, hoveredId, onHover, o
           return (
             <div
               key={item.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`${item.displayName}: ${item.emotion.replace('_', ' ')}`}
+              aria-pressed={isSelected}
+              data-testid={`legend-key-${item.id}`}
               className={`
                 flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-all duration-200 border border-transparent
                 ${isActive ? 'bg-white/10 border-white/10 shadow-sm' : 'hover:bg-white/5 hover:border-white/5'}
@@ -40,6 +45,12 @@ const Legend: React.FC<LegendProps> = ({ data, selectedId, hoveredId, onHover, o
               onMouseEnter={() => onHover(item.id)}
               onMouseLeave={() => onHover(null)}
               onClick={() => onSelect(item.id)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  onSelect(item.id);
+                }
+              }}
             >
               <div 
                 className={`w-3 h-3 rounded-full shadow-inner bg-gradient-to-br ${item.tailwindGradient}`} 

@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Play, Pause, AlertCircle, Loader2, FileText, Terminal, Key, Activity, Music, Zap, Layers } from 'lucide-react';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
-import { EmotionState } from '../types';
+import { EmotionalKeyData } from '../types';
 import LiveVisualizer from './LiveVisualizer';
 import { getNearestKey } from '../utils/emotionMath';
 
@@ -28,13 +28,13 @@ interface ShiftSuggestion {
 }
 
 interface AppThreeProps {
-  onSegmentSelect?: (emotion: EmotionState) => void;
+  selectedKey: EmotionalKeyData;
   onBeat?: () => void;
 }
 
 type AnalysisStep = 'idle' | 'optimizing' | 'analyzing_key' | 'analyzing_segments';
 
-const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
+const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null); 
   const wavesurfer = useRef<WaveSurfer | null>(null);
@@ -54,7 +54,6 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [copySuccess, setCopySuccess] = useState(false);
 
-  const [currentEmotion, setCurrentEmotion] = useState<EmotionState | null>(null);
   const activeSegmentIndexRef = useRef<number>(-1);
   const lastBeatIndexRef = useRef<number>(-1);
 
@@ -111,9 +110,6 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
     if (currentSegIndex !== -1 && currentSegIndex !== activeSegmentIndexRef.current) {
       activeSegmentIndexRef.current = currentSegIndex;
       const seg = segments[currentSegIndex];
-      const newEmotion = { valence: seg.valence, arousal: seg.arousal };
-      setCurrentEmotion(newEmotion);
-      if (onSegmentSelect) onSegmentSelect(newEmotion);
     }
 
     // Local Beat Triggering
@@ -124,7 +120,7 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
         onBeat();
       }
     }
-  }, [currentTime, segments, detectedBeats, onBeat, onSegmentSelect]);
+  }, [currentTime, segments, detectedBeats, onBeat]);
 
   const detectBeats = async (file: File) => {
     // Only attempt full decoding if the file size is safe (less than 3.5MB) to prevent browser tab crash (OOM)
@@ -190,7 +186,6 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
       setError(null);
       activeSegmentIndexRef.current = -1;
       lastBeatIndexRef.current = -1;
-      setCurrentEmotion(null);
 
       // Trigger beat detection locally
       await detectBeats(file);
@@ -298,7 +293,7 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
       rawSegments.forEach((seg: any, index: number) => {
         const startSeconds = parseTime(seg.startTime);
         const endSeconds = parseTime(seg.endTime);
-        const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal});
+        const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal}) ?? selectedKey;
         const r = parseInt(colors.primaryColor.slice(1, 3), 16);
         const g = parseInt(colors.primaryColor.slice(3, 5), 16);
         const b = parseInt(colors.primaryColor.slice(5, 7), 16);
@@ -388,17 +383,28 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
              <div className="terminal-box relative overflow-hidden h-[500px] group shadow-[0_0_20px_rgba(208,0,255,0.15)] flex flex-col">
                 <div className="absolute inset-0 z-0">
                   <LiveVisualizer 
-                    mediaElement={audioRef.current} 
-                    isPlaying={isPlaying} 
-                    valence={currentEmotion?.valence ?? 0}
-                    arousal={currentEmotion?.arousal ?? 0}
+                    selectedKey={selectedKey}
                     reservedFooterHeight={0}
                   />
                 </div>
                 
-                <div className="relative z-10 p-4 pointer-events-none">
+                <div className="relative z-10 p-4 pointer-events-none flex flex-wrap items-center justify-between gap-3">
                   <div className="text-[10px] font-bold hacker-text bg-black/60 backdrop-blur border border-neonViolet/40 inline-block px-3 py-1 rounded shadow-[0_0_10px_rgba(208,0,255,0.2)]">
                      SYS_TIME: {formatTime(currentTime)}
+                  </div>
+                  <div
+                    data-testid="orbital-selected-key"
+                    className="text-[9px] font-bold bg-black/70 border px-3 py-1 rounded tracking-widest"
+                    style={{ color: selectedKey.primaryColor, borderColor: `${selectedKey.primaryColor}66` }}
+                  >
+                    HARMONIC_CENTER: {selectedKey.displayName.toUpperCase()}
+                  </div>
+                  <div
+                    data-testid="resonance-waveform-status"
+                    className="text-[9px] font-bold bg-black/70 border px-3 py-1 rounded tracking-widest"
+                    style={{ color: selectedKey.primaryColor, borderColor: `${selectedKey.primaryColor}66` }}
+                  >
+                    GENERATED_AROUSAL: {selectedKey.arousal.toFixed(2)}
                   </div>
                 </div>
              </div>
@@ -464,7 +470,7 @@ const AppThree: React.FC<AppThreeProps> = ({ onSegmentSelect, onBeat }) => {
                        const start = parseTime(seg.startTime);
                        const end = parseTime(seg.endTime);
                        const isActive = currentTime >= start && currentTime < end && isPlaying;
-                       const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal});
+                       const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal}) ?? selectedKey;
                        return (
                         <div key={idx} className={`terminal-box glass-shine p-4 transition-all cursor-pointer relative overflow-hidden group ${isActive ? 'shadow-[0_0_20px_rgba(0,255,65,0.3)] border-hackerGreen' : 'border-neonViolet/30 hover:border-neonViolet'}`} onClick={() => { if (wavesurfer.current) { wavesurfer.current.setTime(start); wavesurfer.current.play(); }}}>
                            <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: colors.primaryColor }} />

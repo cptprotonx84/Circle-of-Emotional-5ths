@@ -7,7 +7,13 @@ This system is a self-contained exploration of harmonic resonance. It maps music
 
 ### Design Framework
 - **Emotional Mapping**: Utilizes a DEAM-inspired (Database for Emotional Analysis in Music) 2D valence/arousal coordinate system.
-- **Key Association**: Individual emotional key mappings are manually curated to align with classical music-psychology theory, ensuring artistic and thematic coherence without empirical cloud-data reliance.
+- **Key Association**: Individual key mappings are curated artistic and music-theory heuristics. They are exploratory associations, not psychological diagnosis or empirically definitive measurements of emotion.
+
+### Resonance Waveform
+- The Resonance Waveform is a generated visual signal driven by the currently selected key's mapped arousal value.
+- It is not a live audio waveform and does not claim to measure the user's emotional state.
+- Low mapped arousal produces restrained, slower motion; higher mapped arousal produces stronger displacement and slightly greater speed and complexity.
+- Live audio analysis remains future work. The separate audio/timeline tools are placeholders and mock-assisted demonstrations in this offline release.
 
 ## Operational Modes
 1. **Songwriter Mode**: Focuses on individual key analysis, offering emotional heuristics and songwriting texture advice based on the selected harmonic center.
@@ -36,7 +42,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Project Identity**: Nick Valence / NX-Valence Labs
 
 ## Known Issues
-- **Audio Analysis**: The "Audio Analysis" functionality is currently a placeholder/mock output and does not perform real-time signal processing. This will be implemented in a future release.
+- **Audio Analysis**: The "Audio Analysis" functionality is currently a placeholder/mock output and does not perform authoritative real-time signal processing. This remains future work.
 
 ## Build/Deploy
 - **Build**: `npm run build`

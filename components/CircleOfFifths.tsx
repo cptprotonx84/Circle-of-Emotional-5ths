@@ -1,48 +1,51 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import * as d3 from 'd3';
 import { motion } from 'motion/react';
-import { EmotionalKeyData } from '../types';
+import { EmotionalKeyData, MusicalKeyId } from '../types';
 
 interface CircleOfFifthsProps {
   data: EmotionalKeyData[];
-  selectedId: number | null;
-  hoveredId: number | null;
+  selectedId: MusicalKeyId | null;
+  hoveredId: MusicalKeyId | null;
   isResonating?: boolean;
-  onSelect: (id: number) => void;
-  onHover: (id: number | null) => void;
+  onSelect: (id: MusicalKeyId) => void;
+  onHover: (id: MusicalKeyId | null) => void;
 }
 
 const WaveformOverlay: React.FC<{ arousal: number, color: string, radius: number }> = ({ arousal, color, radius }) => {
-  const [phase, setPhase] = useState(0);
+  const pathRef = useRef<SVGPathElement>(null);
+  const targetArousalRef = useRef(Math.min(1, Math.max(0, arousal)));
+  const currentArousalRef = useRef(targetArousalRef.current);
+
+  useEffect(() => {
+    targetArousalRef.current = Math.min(1, Math.max(0, arousal));
+  }, [arousal]);
 
   useEffect(() => {
     let animationFrameId: number;
+    let phase = 0;
     const animate = () => {
-      // Speed scales with arousal
-      const speed = 0.03 + Math.abs(arousal) * 0.05;
-      setPhase(prev => (prev + speed) % (Math.PI * 2));
+      currentArousalRef.current += (targetArousalRef.current - currentArousalRef.current) * 0.04;
+      const normalizedArousal = currentArousalRef.current;
+      phase = (phase + 0.02 + normalizedArousal * 0.045) % (Math.PI * 2);
+      const amplitude = 4 + normalizedArousal * 16;
+      const frequency = 6 + Math.floor(normalizedArousal * 8);
+      const points = Array.from({ length: 150 }, (_, index) => {
+        const angle = (index / 150) * Math.PI * 2;
+        const pointRadius = radius + Math.sin(angle * frequency + phase) * amplitude;
+        return `${pointRadius * Math.cos(angle)},${pointRadius * Math.sin(angle)}`;
+      });
+      pathRef.current?.setAttribute('d', `M ${points.join(' L ')} Z`);
       animationFrameId = requestAnimationFrame(animate);
     };
     animate();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [arousal]);
-
-  const numPoints = 150;
-  // Amplitude and frequency scale with arousal
-  const amplitude = 4 + Math.abs(arousal) * 12;
-  const frequency = 6 + Math.floor(Math.abs(arousal) * 8);
-
-  const points = Array.from({ length: numPoints }).map((_, i) => {
-    const angle = (i / numPoints) * Math.PI * 2;
-    const r = radius + Math.sin(angle * frequency + phase) * amplitude;
-    return `${r * Math.cos(angle)},${r * Math.sin(angle)}`;
-  });
-
-  const d = `M ${points.join(' L ')} Z`;
+  }, [radius]);
 
   return (
     <motion.path 
-      d={d} 
+      ref={pathRef}
+      d=""
       stroke={color} 
       fill="none" 
       strokeWidth={2} 
@@ -151,7 +154,6 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
             return (
               <motion.g 
                 key={slice.data.id} 
-                onClick={() => onSelect(slice.data.id)}
                 onMouseEnter={() => onHover(slice.data.id)}
                 onMouseLeave={() => onHover(null)}
                 className="cursor-pointer group"
@@ -159,6 +161,18 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hover
                 transition={{ duration: 0.3, ease: "easeInOut" }}
               >
                 <motion.path
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${slice.data.displayName}: ${slice.data.emotion.replace('_', ' ')}`}
+                  aria-pressed={isSelected}
+                  data-testid={`circle-key-${slice.data.id}`}
+                  onClick={() => onSelect(slice.data.id)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelect(slice.data.id);
+                    }
+                  }}
                   d={arcGenerator(slice) || undefined}
                   className={`
                     stroke-black stroke-[3px]

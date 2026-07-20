@@ -9,9 +9,16 @@ const getDistance = (e1: EmotionState, e2: EmotionState): number => {
 };
 
 // Find the nearest key in our database to a given V-A point
-export const getNearestKey = (e: EmotionState): EmotionalKeyData => {
+export const getNearestKey = (e: EmotionState): EmotionalKeyData | null => {
+  if (!Number.isFinite(e.valence) || !Number.isFinite(e.arousal)) {
+    if (import.meta.env.DEV) {
+      console.warn('[selected-key] Cannot map non-finite valence/arousal values.', e);
+    }
+    return null;
+  }
+
   let minDist = Infinity;
-  let nearest = EMOTIONAL_KEYS[0];
+  let nearest: EmotionalKeyData | null = null;
 
   for (const k of EMOTIONAL_KEYS) {
     // Note: EMOTIONAL_KEYS arousal is 0.3-0.9 usually. 
@@ -24,6 +31,9 @@ export const getNearestKey = (e: EmotionState): EmotionalKeyData => {
       minDist = dist;
       nearest = k;
     }
+  }
+  if (!nearest && import.meta.env.DEV) {
+    console.warn('[selected-key] No emotional key mapping was available; preserving the current selection.');
   }
   return nearest;
 };
@@ -43,8 +53,12 @@ export const calculateMetrics = (e1: EmotionState, e2: EmotionState): AnalysisRe
   const k2 = getNearestKey(e2);
 
   return {
-    emotion1: { key: k1.musicalKey, mood: k1.mood, data: k1 },
-    emotion2: { key: k2.musicalKey, mood: k2.mood, data: k2 },
+    emotion1: k1
+      ? { key: k1.displayName, mood: k1.mood, data: k1 }
+      : { key: 'UNMAPPED' },
+    emotion2: k2
+      ? { key: k2.displayName, mood: k2.mood, data: k2 }
+      : { key: 'UNMAPPED' },
     distance: dist,
     resonanceIndex: resonanceIndex
   };

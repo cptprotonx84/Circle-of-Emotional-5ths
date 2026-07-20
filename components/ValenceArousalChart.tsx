@@ -12,12 +12,12 @@ import {
   Cell,
   Label
 } from 'recharts';
-import { EmotionalKeyData } from '../types';
+import { EmotionalKeyData, MusicalKeyId } from '../types';
 
 interface ValenceArousalChartProps {
   data: EmotionalKeyData[];
-  selectedId: number | null;
-  onSelect: (id: number) => void;
+  selectedId: MusicalKeyId | null;
+  onSelect: (id: MusicalKeyId) => void;
 }
 
 const CustomTooltip = ({ active, payload }: any) => {

@@ -1,30 +1,39 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import ResonanceControls from './ResonanceControls';
 import SoundReactiveMatrix from './SoundReactiveMatrix';
-import { calculateMetrics } from '../utils/emotionMath';
-import { EmotionState, AnalysisResult } from '../types';
+import { calculateMetrics, getNearestKey } from '../utils/emotionMath';
+import { AnalysisResult, EmotionalKeyData, EmotionState, MusicalKeyId } from '../types';
 import { Cpu, Zap, Activity, Info, AlertCircle, Key } from 'lucide-react';
 
 interface AppTwoProps {
-  externalState?: EmotionState | null;
+  selectedKey: EmotionalKeyData;
+  onSelectedKeyChange: (id: MusicalKeyId) => void;
   beatTrigger?: number;
 }
 
-const AppTwo: React.FC<AppTwoProps> = ({ externalState, beatTrigger }) => {
-  const [e1, setE1] = useState<EmotionState>({ valence: 0.6, arousal: 0.5 });
+const AppTwo: React.FC<AppTwoProps> = ({ selectedKey, onSelectedKeyChange, beatTrigger }) => {
+  const e1 = useMemo<EmotionState>(
+    () => ({ valence: selectedKey.valence, arousal: selectedKey.arousal }),
+    [selectedKey],
+  );
   const [e2, setE2] = useState<EmotionState>({ valence: -0.4, arousal: -0.3 });
   
   const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (externalState) {
-      setE1(externalState);
-    }
-  }, [externalState]);
-
   const metrics: AnalysisResult = useMemo(() => calculateMetrics(e1, e2), [e1, e2]);
+
+  const handlePrimaryProbeChange = (nextEmotion: EmotionState) => {
+    const mappedKey = getNearestKey(nextEmotion);
+    if (!mappedKey) {
+      if (import.meta.env.DEV) {
+        console.warn('[selected-key] Probe mapping failed; preserving the last valid selected key.');
+      }
+      return;
+    }
+    onSelectedKeyChange(mappedKey.id);
+  };
 
   const handleOpenKeyDialog = async () => {
     if (window.aistudio?.openSelectKey) {
@@ -81,7 +90,7 @@ const AppTwo: React.FC<AppTwoProps> = ({ externalState, beatTrigger }) => {
             label="EMO_PROBE_01" 
             colorClass="border-neonViolet text-hackerGreen" 
             state={e1} 
-            onChange={setE1} 
+            onChange={handlePrimaryProbeChange}
           />
           <ResonanceControls 
             label="EMO_PROBE_02" 
@@ -99,7 +108,7 @@ const AppTwo: React.FC<AppTwoProps> = ({ externalState, beatTrigger }) => {
               <SoundReactiveMatrix 
                 mediaElement={null} 
                 isPlaying={true} 
-                targetEmotion={e1} 
+                selectedKey={selectedKey}
                 beatTrigger={beatTrigger}
               />
             </div>

@@ -54,7 +54,7 @@ const GeminiInsight: React.FC<GeminiInsightProps> = ({ data }) => {
   }
 
   return (
-    <div className="relative terminal-box p-6 h-full overflow-y-auto">
+    <div data-testid="selected-insight" data-selected-key-id={data.id} className="relative terminal-box p-6 h-full overflow-y-auto">
       <div className="flex items-center gap-3 mb-6 pb-3 border-b border-neonViolet/50">
         <Sparkles className={`w-5 h-5 ${loading ? 'animate-pulse text-neonViolet' : 'text-hackerGreen'}`} />
         <h3 className="text-sm font-bold hacker-text uppercase tracking-[0.2em]">NEURAL_COGNITION_OUTPUT</h3>

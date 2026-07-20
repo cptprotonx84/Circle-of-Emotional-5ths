@@ -1,13 +1,12 @@
 
 import React, { useEffect, useRef } from 'react';
 import { EMOTIONAL_KEYS } from '../constants';
-import { getNearestKey } from '../utils/emotionMath';
-import { EmotionState, EmotionalKeyData } from '../types';
+import { EmotionalKeyData, MusicalKeyId } from '../types';
 
 interface SoundReactiveMatrixProps {
   mediaElement: HTMLMediaElement | null;
   isPlaying: boolean;
-  targetEmotion: EmotionState | null;
+  selectedKey: EmotionalKeyData;
   beatTrigger?: number;
 }
 
@@ -17,7 +16,7 @@ const HISTORY_SIZE = 50;
 const ORBIT_RADIUS = 150;
 const ATTRACTOR_STRENGTH = 0.08;
 
-const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement, isPlaying, targetEmotion, beatTrigger }) => {
+const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement, isPlaying, selectedKey, beatTrigger }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -37,8 +36,8 @@ const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement,
     tension: 0,
     flux: 0,
     previousSpectrum: new Float32Array(FFT_SIZE / 2),
-    pulses: [] as { id: number; time: number; color: string }[],
-    lastTargetId: -1,
+    pulses: [] as { id: MusicalKeyId; time: number; color: string }[],
+    lastTargetId: null as MusicalKeyId | null,
   });
 
   useEffect(() => {
@@ -108,20 +107,17 @@ const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement,
       state.current.tension = state.current.mid * 0.5 + state.current.high * 0.5;
 
       // 2. Shortest Path Attraction
-      let currentTarget: EmotionalKeyData | null = null;
-      if (targetEmotion) {
-        currentTarget = getNearestKey(targetEmotion);
-        state.current.targetAngle = -Math.PI / 2 + (currentTarget.keyPosition - 1) * (Math.PI / 6);
+      const currentTarget = selectedKey;
+      state.current.targetAngle = -Math.PI / 2 + (currentTarget.keyPosition - 1) * (Math.PI / 6);
         
-        // Detect Note Change for pulses
-        if (currentTarget.id !== state.current.lastTargetId) {
-          state.current.pulses.push({
-            id: currentTarget.id,
-            time: 1.0,
-            color: currentTarget.primaryColor
-          });
-          state.current.lastTargetId = currentTarget.id;
-        }
+      // Selection changes may pulse the matching node, but never replace the canonical selection.
+      if (currentTarget.id !== state.current.lastTargetId) {
+        state.current.pulses.push({
+          id: currentTarget.id,
+          time: 1.0,
+          color: currentTarget.primaryColor
+        });
+        state.current.lastTargetId = currentTarget.id;
       }
 
       let diff = state.current.targetAngle - state.current.angle;
@@ -277,11 +273,14 @@ const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement,
       window.removeEventListener('resize', handleResize);
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
-  }, [isPlaying, targetEmotion]);
+  }, [isPlaying, selectedKey]);
 
   return (
     <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-950 border border-white/5 shadow-2xl">
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
+      <div data-testid="resonance-orbital-key" className="absolute bottom-4 left-4 text-[9px] font-mono tracking-widest pointer-events-none" style={{ color: selectedKey.primaryColor }}>
+        ORBITAL_TARGET: {selectedKey.displayName.toUpperCase()}
+      </div>
       <div className="absolute bottom-4 right-4 flex flex-col items-end gap-1 opacity-40 pointer-events-none">
         <span className="text-[9px] font-mono text-cyan-400">FLUX_STRENGTH: {(state.current.flux * 100).toFixed(1)}%</span>
         <span className="text-[9px] font-mono text-rose-400">VECTOR_MASS: {(state.current.radius * 10).toFixed(1)}u</span>

@@ -1,276 +1,229 @@
 import React, { useEffect, useRef } from 'react';
 import { EMOTIONAL_KEYS } from '../constants';
+import { EmotionalKeyData } from '../types';
 
 interface LiveVisualizerProps {
-  mediaElement: HTMLMediaElement | null;
-  isPlaying: boolean;
-  valence: number;
-  arousal: number;
-  reservedFooterHeight?: number; 
+  selectedKey: EmotionalKeyData;
+  reservedFooterHeight?: number;
 }
 
-const RHYTHM_H = 90;
-const FOOTER_PAD = 14;
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
-const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ 
-  mediaElement, 
-  isPlaying, 
-  valence, 
-  arousal,
-  reservedFooterHeight = 90 
-}) => {
+const hexToRgba = (hex: string, alpha: number) => {
+  const normalized = hex.replace('#', '');
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+};
+
+const keyAngle = (key: EmotionalKeyData) => -Math.PI / 2 + (key.keyPosition - 1) * (Math.PI / 6);
+
+const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ selectedKey, reservedFooterHeight = 0 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-
-  // Persistence for smoothed audio envelopes
-  const envelopes = useRef({
-    low: 0,
-    mid: 0,
-    high: 0,
-    overall: 0,
-    guitar: 0
+  const selectedKeyRef = useRef(selectedKey);
+  const targetArousalRef = useRef(clamp01(selectedKey.arousal));
+  const visualStateRef = useRef({
+    phase: 0,
+    arousal: clamp01(selectedKey.arousal),
+    angle: keyAngle(selectedKey),
   });
 
-  // Audio setup
   useEffect(() => {
-    if (!mediaElement) return;
-    const initAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const ctx = audioContextRef.current;
-      if (!analyserRef.current) {
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 1024;
-        analyser.smoothingTimeConstant = 0.8;
-        analyserRef.current = analyser;
-      }
-      if (!sourceRef.current) {
-        try {
-          // Prevent DOMException by reusing previous source node if already created on this mediaElement
-          const cacheKey = '_audioSource';
-          if ((mediaElement as any)[cacheKey]) {
-            sourceRef.current = (mediaElement as any)[cacheKey];
-          } else {
-            sourceRef.current = ctx.createMediaElementSource(mediaElement);
-            (mediaElement as any)[cacheKey] = sourceRef.current;
-          }
-          sourceRef.current.connect(analyserRef.current!);
-          analyserRef.current!.connect(ctx.destination);
-        } catch (err) { console.warn(err); }
-      }
-    };
-    initAudio();
-  }, [mediaElement]);
+    selectedKeyRef.current = selectedKey;
+    targetArousalRef.current = clamp01(selectedKey.arousal);
+  }, [selectedKey]);
 
   useEffect(() => {
-    const ctx = audioContextRef.current;
-    if (ctx && isPlaying && ctx.state === 'suspended') ctx.resume();
-  }, [isPlaying]);
-
-  useEffect(() => {
-    if (!canvasRef.current || !analyserRef.current) return;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
+    if (!canvas) return;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return;
 
     const resize = () => {
       const parent = canvas.parentElement;
-      if (parent) {
-        canvas.width = parent.offsetWidth * window.devicePixelRatio;
-        canvas.height = parent.offsetHeight * window.devicePixelRatio;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-      }
+      if (!parent) return;
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = Math.max(1, parent.clientWidth);
+      const height = Math.max(1, parent.clientHeight);
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     };
-    resize();
-    window.addEventListener('resize', resize);
-
-    const analyser = analyserRef.current;
-    const bufferLength = analyser.frequencyBinCount;
-    const freqData = new Uint8Array(bufferLength);
-    const timeData = new Uint8Array(bufferLength);
 
     const render = () => {
-      analyser.getByteFrequencyData(freqData);
-      analyser.getByteTimeDomainData(timeData);
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = canvas.width / pixelRatio;
+      const height = canvas.height / pixelRatio;
+      const usableHeight = Math.max(260, height - reservedFooterHeight);
+      const selected = selectedKeyRef.current;
+      const state = visualStateRef.current;
 
-      const w = canvas.width / window.devicePixelRatio;
-      const h = canvas.height / window.devicePixelRatio;
-      
-      const useFullHeight = reservedFooterHeight === 0;
-      const cx = w / 2;
-      const cy = h / 2;
-      const time = Date.now() / 1000;
+      state.arousal += (targetArousalRef.current - state.arousal) * 0.035;
+      state.phase += 0.009 + state.arousal * 0.019;
 
-      // --- 1. Audio Feature Extraction ---
-      let lowSum = 0, midSum = 0, highSum = 0, totalSum = 0, guitarSum = 0;
-      
-      // Low (Bass): ~20-140Hz (bins 0-3)
-      for (let i = 0; i < 4; i++) lowSum += freqData[i];
-      // Mid (Voice): ~200-3000Hz (bins 4-70)
-      for (let i = 4; i < 70; i++) midSum += freqData[i];
-      // High (Hats/Air): ~3k-10kHz (bins 71-232)
-      for (let i = 71; i < 232; i++) highSum += freqData[i];
-      // Guitar/Texture: ~700Hz - 3500Hz (bins 16-81)
-      for (let i = 16; i < 82; i++) guitarSum += freqData[i];
-      // Total
-      for (let i = 0; i < 232; i++) totalSum += freqData[i];
+      const targetAngle = keyAngle(selected);
+      let angleDifference = targetAngle - state.angle;
+      while (angleDifference < -Math.PI) angleDifference += Math.PI * 2;
+      while (angleDifference > Math.PI) angleDifference -= Math.PI * 2;
+      state.angle += angleDifference * 0.075;
 
-      const lowTarget = lowSum / 4 / 255;
-      const midTarget = midSum / 66 / 255;
-      const highTarget = highSum / 161 / 255;
-      const guitarTarget = guitarSum / 66 / 255;
-      const overallTarget = totalSum / 232 / 255;
+      context.fillStyle = '#020409';
+      context.fillRect(0, 0, width, height);
 
-      envelopes.current.low += (lowTarget - envelopes.current.low) * 0.15;
-      envelopes.current.mid += (midTarget - envelopes.current.mid) * 0.15;
-      envelopes.current.high += (highTarget - envelopes.current.high) * 0.15;
-      envelopes.current.guitar += (guitarTarget - envelopes.current.guitar) * 0.12;
-      envelopes.current.overall += (overallTarget - envelopes.current.overall) * 0.1;
-
-      const { low, mid, high, overall, guitar } = envelopes.current;
-      const lowEnergy = low; const midEnergy = mid; const highEnergy = high; const overallEnergy = overall;
-
-      // Clear
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, w, h);
-
-      // --- 2. Color Mapping (Voice/Freq Reactive) ---
-      const energyWeight = mid + high + low + 0.001;
-      let reactiveHue = (180 + midEnergy * 60 + highEnergy * 120 + lowEnergy * -60) % 360;
-
-      // --- 3. Enhanced Oscilloscope Visibility (GOAL A) ---
-      const mainBaseWidth = 3.0 + overall * 3.0;
-      const mainBaseAlpha = 0.55 + overall * 0.4;
-      const reactiveLightness = 35 + overall * 35;
-
-      const scopeWidth = Math.min(w * 0.65, 520);
-      const xStart = cx - scopeWidth / 2;
-      const ampBase = 40 + low * 100 + arousal * 30;
-
-      const drawHighVisScope = (yOffset: number, gain: number, alphaMult: number, hueShift: number, isTexture: boolean) => {
-        const hue = (reactiveHue + hueShift) % 360;
-        const mainAlpha = mainBaseAlpha * alphaMult;
-        const mainWidth = (isTexture ? 2.0 + guitar * 2.0 : mainBaseWidth) * gain;
-
-        const scopeGrad = ctx.createLinearGradient(xStart, 0, xStart + scopeWidth, 0);
-        scopeGrad.addColorStop(0, `hsla(${hue}, 100%, ${reactiveLightness}%, 0)`);
-        scopeGrad.addColorStop(0.5, `hsla(${hue}, 100%, ${reactiveLightness + 10}%, ${mainAlpha})`);
-        scopeGrad.addColorStop(1, `hsla(${hue}, 100%, ${reactiveLightness}%, 0)`);
-
-        let prevS = 0;
-
-        const drawPass = (wFactor: number, aFactor: number, composite: GlobalCompositeOperation) => {
-          ctx.save();
-          ctx.beginPath();
-          ctx.globalAlpha = mainAlpha * aFactor * (0.5 + overallEnergy * 0.5 + midEnergy * 0.3);
-          ctx.strokeStyle = scopeGrad;
-          ctx.lineWidth = mainWidth * (0.5 + overallEnergy * 0.8 + midEnergy * 0.4);
-          ctx.globalCompositeOperation = composite;
-
-          for (let i = 0; i < bufferLength; i++) {
-            const t = i / (bufferLength - 1);
-            let s = (timeData[i] - 128) / 128;
-            
-            // Texture high-pass (GOAL B)
-            if (isTexture) {
-              const highPassS = s - 0.92 * prevS;
-              prevS = s;
-              s = highPassS * 1.5; // Gain for visibility
-            }
-
-            const x = xStart + t * scopeWidth;
-            const y = cy + yOffset + s * ampBase * gain;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          }
-          ctx.stroke();
-          ctx.restore();
-        };
-
-        // Bloom Pass 1: Glow
-        drawPass(2.2, 0.22, 'lighter');
-        // Bloom Pass 2: Halo
-        drawPass(1.5, 0.18, 'lighter');
-        // Bloom Pass 3: Core
-        drawPass(1.0, 1.0, 'source-over');
-      };
-
-      // Draw Texture Layer (Guitar-ish) (GOAL B)
-      if (guitar > 0.05) {
-        drawHighVisScope(-18, 0.7, guitar * 0.8, 40, true);
+      context.save();
+      context.strokeStyle = 'rgba(92, 112, 142, 0.1)';
+      context.lineWidth = 1;
+      for (let x = 24; x < width; x += 32) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, usableHeight);
+        context.stroke();
       }
+      for (let y = 24; y < usableHeight; y += 32) {
+        context.beginPath();
+        context.moveTo(0, y);
+        context.lineTo(width, y);
+        context.stroke();
+      }
+      context.restore();
 
-      // Draw Main Multi-Layered Oscilloscope (GOAL A)
-      drawHighVisScope(0, 1.0, 1.0, 0, false);
-      drawHighVisScope(0, 0.6, 0.4, -10, false);
+      const orbitCenterX = width / 2;
+      const orbitCenterY = usableHeight * 0.32;
+      const orbitRadius = Math.min(width * 0.3, usableHeight * 0.22, 132);
 
-      // --- 4. Emotional Nodes ---
-      const orbitRadius = Math.min(w, h) * 0.38;
-      const targetAngle = Math.PI * (valence + 1) - Math.PI / 2;
-      const targetRadius = Math.min(w, h) * 0.25 * (1.1 + arousal);
+      context.beginPath();
+      context.arc(orbitCenterX, orbitCenterY, orbitRadius, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(75, 93, 120, 0.34)';
+      context.lineWidth = 1;
+      context.stroke();
 
-      EMOTIONAL_KEYS.forEach((node) => {
-        const theta = -Math.PI / 2 + (node.keyPosition - 1) * (Math.PI / 6);
-        const nx = cx + Math.cos(theta) * orbitRadius;
-        const ny = cy + Math.sin(theta) * orbitRadius;
-        let angDiff = Math.abs(targetAngle - theta);
-        while (angDiff > Math.PI) angDiff = Math.abs(angDiff - Math.PI * 2);
-        const isActive = angDiff < 0.5;
-        const proximity = Math.max(0, 1 - angDiff);
+      EMOTIONAL_KEYS.forEach(key => {
+        const angle = keyAngle(key);
+        const nodeX = orbitCenterX + Math.cos(angle) * orbitRadius;
+        const nodeY = orbitCenterY + Math.sin(angle) * orbitRadius;
+        const isSelected = key.id === selected.id;
+        const pulse = isSelected ? 1 + Math.sin(state.phase * 2.2) * 0.08 : 1;
+        const nodeRadius = (isSelected ? 8 : 4) * pulse;
 
-        ctx.beginPath();
-        const size = 4 + proximity * 12 + low * 15;
-        ctx.arc(nx, ny, size, 0, Math.PI * 2);
-        ctx.shadowBlur = isActive ? 20 + low * 40 : 0;
-        ctx.shadowColor = node.primaryColor;
-        ctx.fillStyle = node.primaryColor;
-        ctx.globalAlpha = 0.2 + proximity * 0.8;
-        ctx.fill();
-        ctx.shadowBlur = 0;
+        context.save();
+        context.beginPath();
+        context.arc(nodeX, nodeY, nodeRadius, 0, Math.PI * 2);
+        context.fillStyle = key.primaryColor;
+        context.globalAlpha = isSelected ? 1 : 0.28;
+        context.shadowBlur = isSelected ? 22 : 0;
+        context.shadowColor = key.primaryColor;
+        context.fill();
+        context.restore();
 
-        const displayLetter = node.musicalKey.includes('Minor') ? node.musicalKey[0].toLowerCase() : node.musicalKey[0];
-        ctx.save();
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.font = `bold ${Math.max(6, Math.min(size * 0.8, 11))}px monospace`;
-        ctx.fillStyle = isActive ? '#000' : 'rgba(255, 255, 255, 0.8)';
-        ctx.fillText(displayLetter, nx, ny);
-        ctx.restore();
+        context.fillStyle = isSelected ? '#f8fafc' : 'rgba(203, 213, 225, 0.48)';
+        context.font = `${isSelected ? '700 11px' : '600 8px'} ui-monospace, SFMono-Regular, Menlo, monospace`;
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(key.root, nodeX, nodeY + (isSelected ? 20 : 15));
       });
 
-      // --- 5. Emotional Vector & Particle ---
-      const px = cx + Math.cos(targetAngle) * targetRadius;
-      const py = cy + Math.sin(targetAngle) * targetRadius;
+      const particleRadius = orbitRadius * (0.58 + state.arousal * 0.18);
+      const particleX = orbitCenterX + Math.cos(state.angle) * particleRadius;
+      const particleY = orbitCenterY + Math.sin(state.angle) * particleRadius;
 
-      ctx.beginPath();
-      ctx.moveTo(cx, cy); ctx.lineTo(px, py);
-      ctx.strokeStyle = `hsla(${reactiveHue}, 100%, ${reactiveLightness}%, ${mainBaseAlpha * 0.5})`;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke(); ctx.setLineDash([]);
+      context.save();
+      context.beginPath();
+      context.moveTo(orbitCenterX, orbitCenterY);
+      context.lineTo(particleX, particleY);
+      context.strokeStyle = hexToRgba(selected.primaryColor, 0.48);
+      context.setLineDash([4, 6]);
+      context.stroke();
+      context.setLineDash([]);
+      context.beginPath();
+      context.arc(particleX, particleY, 7 + state.arousal * 4, 0, Math.PI * 2);
+      context.fillStyle = '#ffffff';
+      context.shadowBlur = 28;
+      context.shadowColor = selected.primaryColor;
+      context.fill();
+      context.restore();
 
-      ctx.beginPath();
-      ctx.arc(px, py, 10 + low * 20, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 30 + low * 50;
-      ctx.shadowColor = `hsla(${reactiveHue}, 100%, 50%, 0.85)`;
-      ctx.globalAlpha = 1;
-      ctx.fill(); ctx.shadowBlur = 0;
+      context.textAlign = 'center';
+      context.fillStyle = '#f8fafc';
+      context.font = '800 22px ui-monospace, SFMono-Regular, Menlo, monospace';
+      context.fillText(selected.root, orbitCenterX, orbitCenterY - 4);
+      context.fillStyle = selected.primaryColor;
+      context.font = '700 8px ui-monospace, SFMono-Regular, Menlo, monospace';
+      context.fillText(selected.quality.toUpperCase(), orbitCenterX, orbitCenterY + 14);
+
+      const waveformCenterY = usableHeight * 0.78;
+      const waveformWidth = Math.min(width - 48, 620);
+      const waveformStartX = (width - waveformWidth) / 2;
+      const maximumAmplitude = Math.min(58, usableHeight * 0.115);
+      const amplitude = 7 + state.arousal * (maximumAmplitude - 7);
+      const cycles = 1.35 + state.arousal * 0.8;
+      const path = new Path2D();
+      const pointCount = Math.max(120, Math.floor(waveformWidth / 2));
+
+      for (let index = 0; index <= pointCount; index += 1) {
+        const progress = index / pointCount;
+        const envelope = Math.pow(Math.sin(Math.PI * progress), 0.72);
+        const primaryWave = Math.sin(progress * Math.PI * 2 * cycles + state.phase);
+        const harmonicWave = Math.sin(progress * Math.PI * 2 * (cycles * 2.35) - state.phase * 0.62);
+        const signal = primaryWave + harmonicWave * (0.12 + state.arousal * 0.2);
+        const x = waveformStartX + progress * waveformWidth;
+        const y = waveformCenterY + signal * amplitude * envelope * 0.76;
+        if (index === 0) path.moveTo(x, y);
+        else path.lineTo(x, y);
+      }
+
+      context.beginPath();
+      context.moveTo(waveformStartX, waveformCenterY);
+      context.lineTo(waveformStartX + waveformWidth, waveformCenterY);
+      context.strokeStyle = 'rgba(108, 126, 154, 0.18)';
+      context.lineWidth = 1;
+      context.stroke();
+
+      context.save();
+      context.strokeStyle = hexToRgba(selected.primaryColor, 0.22);
+      context.lineWidth = 13;
+      context.shadowBlur = 24;
+      context.shadowColor = selected.primaryColor;
+      context.stroke(path);
+      context.restore();
+
+      context.save();
+      context.strokeStyle = hexToRgba(selected.primaryColor, 0.72);
+      context.lineWidth = 4;
+      context.shadowBlur = 10;
+      context.shadowColor = selected.primaryColor;
+      context.stroke(path);
+      context.restore();
+
+      context.strokeStyle = '#f8fafc';
+      context.lineWidth = 1.25;
+      context.stroke(path);
+
+      context.textAlign = 'left';
+      context.fillStyle = 'rgba(148, 163, 184, 0.62)';
+      context.font = '700 8px ui-monospace, SFMono-Regular, Menlo, monospace';
+      context.fillText('GENERATED_AROUSAL_RESONANCE', waveformStartX, waveformCenterY - maximumAmplitude - 18);
+      context.textAlign = 'right';
+      context.fillStyle = hexToRgba(selected.primaryColor, 0.82);
+      context.fillText(`A=${state.arousal.toFixed(2)}`, waveformStartX + waveformWidth, waveformCenterY - maximumAmplitude - 18);
 
       animationRef.current = requestAnimationFrame(render);
     };
 
+    resize();
+    window.addEventListener('resize', resize);
     render();
-    return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
-      window.removeEventListener('resize', resize);
-    };
-  }, [isPlaying, valence, arousal, reservedFooterHeight]);
 
-  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full rounded-2xl pointer-events-none" />;
+    return () => {
+      window.removeEventListener('resize', resize);
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+    };
+  }, [reservedFooterHeight]);
+
+  return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full rounded-2xl pointer-events-none" />;
 };
 
 export default LiveVisualizer;
