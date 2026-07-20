@@ -4,12 +4,14 @@ import EmoKeyApp from './components/EmoKeyApp';
 import AppTwo from './components/AppTwo';
 import AppThree from './components/AppThree';
 import { EMOTIONAL_KEYS } from './constants';
-import { MusicalKeyId } from './types';
+import { EmotionState, MusicalKeyId } from './types';
 
 const DEFAULT_SELECTED_KEY_ID: MusicalKeyId = 'C_MAJOR';
 
 const App: React.FC = () => {
-  const [selectedKeyId, setSelectedKeyId] = useState<MusicalKeyId>(DEFAULT_SELECTED_KEY_ID);
+  const [manualSelectedKeyId, setManualSelectedKeyId] = useState<MusicalKeyId>(DEFAULT_SELECTED_KEY_ID);
+  const [playbackKeyId, setPlaybackKeyId] = useState<MusicalKeyId | null>(null);
+  const [playbackEmotion, setPlaybackEmotion] = useState<EmotionState | null>(null);
   const [lastBeatTimestamp, setLastBeatTimestamp] = useState<number>(0);
   const [hasPaidKey, setHasPaidKey] = useState(false);
 
@@ -34,8 +36,25 @@ const App: React.FC = () => {
       }
       return;
     }
-    setSelectedKeyId(candidate.id);
+    setManualSelectedKeyId(candidate.id);
+    setPlaybackKeyId(null);
+    setPlaybackEmotion(null);
   }, []);
+
+  const handlePlaybackKeyChange = useCallback((candidateId: MusicalKeyId | null) => {
+    if (candidateId === null) {
+      setPlaybackKeyId(null);
+      return;
+    }
+    const candidate = EMOTIONAL_KEYS.find(key => key.id === candidateId);
+    if (candidate) setPlaybackKeyId(candidate.id);
+  }, []);
+
+  const handlePlaybackEmotionChange = useCallback((emotion: EmotionState | null) => {
+    setPlaybackEmotion(emotion);
+  }, []);
+
+  const selectedKeyId = playbackKeyId ?? manualSelectedKeyId;
 
   const selectedKey = EMOTIONAL_KEYS.find(key => key.id === selectedKeyId);
   if (!selectedKey) {
@@ -131,6 +150,7 @@ const App: React.FC = () => {
           </div>
           <AppTwo
             selectedKey={selectedKey}
+            playbackEmotion={playbackEmotion}
             onSelectedKeyChange={handleSelectedKeyChange}
             beatTrigger={lastBeatTimestamp}
           />
@@ -151,7 +171,12 @@ const App: React.FC = () => {
                REAL-TIME WAVEFORM DECONSTRUCTION AND AROUSAL_MAPPING.
             </p>
           </div>
-          <AppThree selectedKey={selectedKey} onBeat={handleBeat} />
+          <AppThree
+            selectedKey={selectedKey}
+            onPlaybackKeyChange={handlePlaybackKeyChange}
+            onPlaybackEmotionChange={handlePlaybackEmotionChange}
+            onBeat={handleBeat}
+          />
         </section>
 
       </div>

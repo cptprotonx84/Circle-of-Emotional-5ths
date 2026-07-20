@@ -7,14 +7,15 @@ import { Cpu, Zap, Activity, Info, AlertCircle, Key } from 'lucide-react';
 
 interface AppTwoProps {
   selectedKey: EmotionalKeyData;
+  playbackEmotion?: EmotionState | null;
   onSelectedKeyChange: (id: MusicalKeyId) => void;
   beatTrigger?: number;
 }
 
-const AppTwo: React.FC<AppTwoProps> = ({ selectedKey, onSelectedKeyChange, beatTrigger }) => {
+const AppTwo: React.FC<AppTwoProps> = ({ selectedKey, playbackEmotion, onSelectedKeyChange, beatTrigger }) => {
   const e1 = useMemo<EmotionState>(
-    () => ({ valence: selectedKey.valence, arousal: selectedKey.arousal }),
-    [selectedKey],
+    () => playbackEmotion ?? ({ valence: selectedKey.valence, arousal: selectedKey.arousal }),
+    [playbackEmotion, selectedKey],
   );
   const [e2, setE2] = useState<EmotionState>({ valence: -0.4, arousal: -0.3 });
   
@@ -86,6 +87,14 @@ const AppTwo: React.FC<AppTwoProps> = ({ selectedKey, onSelectedKeyChange, beatT
       <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Controls Section */}
         <div className="lg:col-span-4 space-y-6">
+          {playbackEmotion && (
+            <div
+              data-testid="playback-emotion-values"
+              className="terminal-box px-4 py-3 text-[9px] font-bold uppercase tracking-[0.18em] text-hackerGreen"
+            >
+              TIMELINE_INPUT · V:{playbackEmotion.valence.toFixed(2)} · A:{playbackEmotion.arousal.toFixed(2)}
+            </div>
+          )}
           <ResonanceControls 
             label="EMO_PROBE_01" 
             colorClass="border-neonViolet text-hackerGreen" 

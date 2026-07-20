@@ -1,19 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, Play, Pause, AlertCircle, Loader2, FileText, Terminal, Key, Activity, Music, Zap, Layers } from 'lucide-react';
+import { Upload, Play, Pause, Loader2, FileText, Terminal, Key, Activity, Music, Zap, Layers } from 'lucide-react';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
-import { EmotionalKeyData } from '../types';
+import { EmotionalKeyData, EmotionState, MusicalKeyId } from '../types';
 import LiveVisualizer from './LiveVisualizer';
-import { getNearestKey } from '../utils/emotionMath';
-
-interface AudioSegment {
-  startTime: string; // "00:00"
-  endTime: string;   // "00:15"
-  description: string;
-  mood: string;
-  valence: number;
-  arousal: number;
-}
+import { EMOTIONAL_KEYS } from '../constants';
+import {
+  analyzeAudioLocally,
+  ChordTimelineSegment,
+  EmotionTimelineSegment,
+} from '../utils/localAudioAnalysis';
 
 interface TrackInfo {
   key: string;
@@ -29,12 +25,20 @@ interface ShiftSuggestion {
 
 interface AppThreeProps {
   selectedKey: EmotionalKeyData;
+  onPlaybackKeyChange?: (id: MusicalKeyId | null) => void;
+  onPlaybackEmotionChange?: (emotion: EmotionState | null) => void;
   onBeat?: () => void;
 }
 
 type AnalysisStep = 'idle' | 'optimizing' | 'analyzing_key' | 'analyzing_segments';
+type TimelineMode = 'chords' | 'emotions';
 
-const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
+const AppThree: React.FC<AppThreeProps> = ({
+  selectedKey,
+  onPlaybackKeyChange,
+  onPlaybackEmotionChange,
+  onBeat,
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null); 
   const wavesurfer = useRef<WaveSurfer | null>(null);
@@ -46,7 +50,9 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [analysisStep, setAnalysisStep] = useState<AnalysisStep>('idle');
-  const [segments, setSegments] = useState<AudioSegment[]>([]);
+  const [timelineMode, setTimelineMode] = useState<TimelineMode>('chords');
+  const [chordSegments, setChordSegments] = useState<ChordTimelineSegment[]>([]);
+  const [emotionSegments, setEmotionSegments] = useState<EmotionTimelineSegment[]>([]);
   const [trackInfo, setTrackInfo] = useState<TrackInfo | null>(null);
   const [detectedBeats, setDetectedBeats] = useState<number[]>([]);
   const [suggestions, setSuggestions] = useState<ShiftSuggestion[]>([]);
@@ -54,7 +60,8 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
   const [currentTime, setCurrentTime] = useState(0);
   const [copySuccess, setCopySuccess] = useState(false);
 
-  const activeSegmentIndexRef = useRef<number>(-1);
+  const activeChordIndexRef = useRef<number>(-1);
+  const activeEmotionIndexRef = useRef<number>(-1);
   const lastBeatIndexRef = useRef<number>(-1);
 
   useEffect(() => {
@@ -83,44 +90,83 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
     return () => wavesurfer.current?.destroy();
   }, [audioUrl]); 
 
-  // Sync segment selection and beat triggers
   useEffect(() => {
-    if (!segments.length) return;
-    let currentSegIndex = segments.findIndex(seg => {
-      const start = parseTime(seg.startTime);
-      const end = parseTime(seg.endTime);
-      return currentTime >= start && currentTime < end;
-    });
+    if (!wsRegions.current) return;
+    wsRegions.current.clearRegions();
+    const timeline = timelineMode === 'chords' ? chordSegments : emotionSegments;
 
-    // Fallback: If player head goes beyond the last segment, hold onto the last emotional segment
-    if (currentSegIndex === -1 && segments.length > 0) {
-      const firstSeg = segments[0];
-      const firstStart = parseTime(firstSeg.startTime);
-      
-      const lastSeg = segments[segments.length - 1];
-      const lastEnd = parseTime(lastSeg.endTime);
-      
-      if (currentTime >= lastEnd) {
-        currentSegIndex = segments.length - 1;
-      } else if (currentTime < firstStart) {
-        currentSegIndex = 0;
+    timeline.forEach((segment, index) => {
+      const mappedKey = segment.mappedKeyId
+        ? EMOTIONAL_KEYS.find(key => key.id === segment.mappedKeyId) ?? EMOTIONAL_KEYS[0]
+        : EMOTIONAL_KEYS[0];
+      const red = parseInt(mappedKey.primaryColor.slice(1, 3), 16);
+      const green = parseInt(mappedKey.primaryColor.slice(3, 5), 16);
+      const blue = parseInt(mappedKey.primaryColor.slice(5, 7), 16);
+      wsRegions.current.addRegion({
+        start: segment.startTime,
+        end: segment.endTime,
+        content: timelineMode === 'chords' ? (segment as ChordTimelineSegment).chord : `${index + 1}`,
+        color: `rgba(${red}, ${green}, ${blue}, 0.18)`,
+        drag: false,
+        resize: false,
+      });
+    });
+  }, [audioUrl, chordSegments, emotionSegments, timelineMode]);
+
+  const findActiveIndex = <T extends { startTime: number; endTime: number }>(timeline: T[]) => {
+    if (!timeline.length) return -1;
+    const exactIndex = timeline.findIndex(segment => currentTime >= segment.startTime && currentTime < segment.endTime);
+    if (exactIndex !== -1) return exactIndex;
+    if (currentTime >= timeline[timeline.length - 1].endTime) return timeline.length - 1;
+    return 0;
+  };
+
+  const activeChordIndex = findActiveIndex(chordSegments);
+  const activeEmotionIndex = findActiveIndex(emotionSegments);
+  const activeChord = activeChordIndex >= 0 ? chordSegments[activeChordIndex] : null;
+  const activeEmotion = activeEmotionIndex >= 0 ? emotionSegments[activeEmotionIndex] : null;
+
+  // The timeline mode decides which analysis stream drives the circle and EMO_PROBE.
+  useEffect(() => {
+    if (timelineMode === 'chords') {
+      onPlaybackEmotionChange?.(null);
+      if (activeChordIndex !== -1 && activeChordIndex !== activeChordIndexRef.current) {
+        activeChordIndexRef.current = activeChordIndex;
+        onPlaybackKeyChange?.(chordSegments[activeChordIndex].mappedKeyId);
+      }
+    } else {
+      if (activeEmotionIndex !== -1 && activeEmotionIndex !== activeEmotionIndexRef.current) {
+        activeEmotionIndexRef.current = activeEmotionIndex;
+        const segment = emotionSegments[activeEmotionIndex];
+        onPlaybackEmotionChange?.({ valence: segment.valence, arousal: segment.arousal });
+        onPlaybackKeyChange?.(segment.mappedKeyId);
       }
     }
 
-    if (currentSegIndex !== -1 && currentSegIndex !== activeSegmentIndexRef.current) {
-      activeSegmentIndexRef.current = currentSegIndex;
-      const seg = segments[currentSegIndex];
-    }
-
-    // Local Beat Triggering
     if (detectedBeats.length && onBeat) {
-      const currentBeatIndex = detectedBeats.findIndex(b => currentTime >= b && currentTime < b + 0.1);
+      const currentBeatIndex = detectedBeats.findIndex(beat => currentTime >= beat && currentTime < beat + 0.1);
       if (currentBeatIndex !== -1 && currentBeatIndex !== lastBeatIndexRef.current) {
         lastBeatIndexRef.current = currentBeatIndex;
         onBeat();
       }
     }
-  }, [currentTime, segments, detectedBeats, onBeat]);
+  }, [
+    activeChordIndex,
+    activeEmotionIndex,
+    chordSegments,
+    currentTime,
+    detectedBeats,
+    emotionSegments,
+    onBeat,
+    onPlaybackEmotionChange,
+    onPlaybackKeyChange,
+    timelineMode,
+  ]);
+
+  useEffect(() => () => {
+    onPlaybackKeyChange?.(null);
+    onPlaybackEmotionChange?.(null);
+  }, [onPlaybackEmotionChange, onPlaybackKeyChange]);
 
   const detectBeats = async (file: File) => {
     // Only attempt full decoding if the file size is safe (less than 3.5MB) to prevent browser tab crash (OOM)
@@ -180,27 +226,25 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
       setIsPlaying(false);
       setAudioUrl(url);
       setAudioFile(file);
-      setSegments([]);
+      setChordSegments([]);
+      setEmotionSegments([]);
       setTrackInfo(null);
       setSuggestions([]);
       setError(null);
-      activeSegmentIndexRef.current = -1;
+      activeChordIndexRef.current = -1;
+      activeEmotionIndexRef.current = -1;
       lastBeatIndexRef.current = -1;
+      onPlaybackKeyChange?.(null);
+      onPlaybackEmotionChange?.(null);
 
       // Trigger beat detection locally
       await detectBeats(file);
     }
   };
 
-  const handleOpenKeyDialog = async () => {
-    if (window.aistudio?.openSelectKey) {
-      await window.aistudio.openSelectKey();
-    }
-  };
-
   const handleCopyData = async () => {
-    if (segments.length === 0) return;
-    const exportData = { trackInfo, segments, suggestions };
+    if (chordSegments.length === 0 && emotionSegments.length === 0) return;
+    const exportData = { trackInfo, chordSegments, emotionSegments, suggestions };
     try {
       await navigator.clipboard.writeText(JSON.stringify(exportData, null, 2));
       setCopySuccess(true);
@@ -209,19 +253,6 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
   };
 
   const togglePlay = () => wavesurfer.current && wavesurfer.current.playPause();
-
-  const parseTime = (timeStr: string) => {
-    if (!timeStr) return 0;
-    const cleanStr = timeStr.trim();
-    if (!cleanStr.includes(':')) {
-      const val = parseFloat(cleanStr);
-      return isNaN(val) ? 0 : val;
-    }
-    const parts = cleanStr.split(':');
-    const minutes = parseInt(parts[0], 10) || 0;
-    const seconds = parseFloat(parts[1]) || 0;
-    return minutes * 60 + seconds;
-  };
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -233,81 +264,24 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
     if (!audioFile) return;
     setAnalysisStep('optimizing');
     setError(null);
-    setSegments([]);
+    setChordSegments([]);
+    setEmotionSegments([]);
     setTrackInfo(null);
     setSuggestions([]);
     try {
-      // Get the duration from the WaveSurfer instance
-      const durationVal = wavesurfer.current?.getDuration() || 0;
-      const durationStr = formatTime(durationVal);
-
-      // Slice the audio file to first 8MB to ensure robust context analysis while keeping body upload safe in limit
-      const maxSegmentBytes = 8 * 1024 * 1024;
-      const optimizedFile = audioFile.size > maxSegmentBytes 
-        ? audioFile.slice(0, maxSegmentBytes, audioFile.type) 
-        : audioFile;
-
-      const reader = new FileReader();
-      const base64Data = await new Promise<string>((resolve, reject) => {
-        reader.onloadend = () => {
-          const resultStr = reader.result as string;
-          resolve(resultStr.split(',')[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(optimizedFile);
+      setAnalysisStep('analyzing_segments');
+      const analysis = await analyzeAudioLocally(audioFile);
+      setChordSegments(analysis.chordSegments);
+      setEmotionSegments(analysis.emotionSegments);
+      setTrackInfo({
+        key: analysis.globalKey,
+        tempo: 'LOCAL_ESTIMATE',
+        chords: analysis.chordProgression,
       });
-
-      setAnalysisStep('analyzing_key');
-
-      const res = await fetch("/api/analyze-audio", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          audioData: base64Data,
-          mimeType: optimizedFile.type,
-          scriptContext,
-          duration: durationStr,
-        }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        if (errorData.error === "QUOTA_EXCEEDED" || res.status === 429) {
-          throw new Error("QUOTA_EXCEEDED");
-        }
-        throw new Error(errorData.error || "SIGNAL_LOST");
-      }
-
-      const responseData = await res.json();
-
-      if (responseData.trackInfo) {
-        setTrackInfo(responseData.trackInfo);
-      }
-      const rawSegments = responseData.segments || [];
-      setSegments(rawSegments);
-      setSuggestions(responseData.suggestions || []);
-      
-      wsRegions.current.clearRegions();
-      rawSegments.forEach((seg: any, index: number) => {
-        const startSeconds = parseTime(seg.startTime);
-        const endSeconds = parseTime(seg.endTime);
-        const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal}) ?? selectedKey;
-        const r = parseInt(colors.primaryColor.slice(1, 3), 16);
-        const g = parseInt(colors.primaryColor.slice(3, 5), 16);
-        const b = parseInt(colors.primaryColor.slice(5, 7), 16);
-        wsRegions.current.addRegion({
-          start: startSeconds, end: endSeconds, content: `${index + 1}`, 
-          color: `rgba(${r}, ${g}, ${b}, 0.15)`, drag: false, resize: false,
-        });
-      });
+      activeChordIndexRef.current = -1;
+      activeEmotionIndexRef.current = -1;
     } catch (err: any) {
-      if (err.message?.includes('QUOTA_EXCEEDED')) {
-        setError("QUOTA_EXCEEDED");
-      } else {
-        setError("ANALYSIS_HALTED: " + (err.message || "SIGNAL_LOST"));
-      }
+      setError("ANALYSIS_HALTED: " + (err.message || "SIGNAL_LOST"));
     } finally { setAnalysisStep('idle'); }
   };
 
@@ -326,44 +300,36 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
                 </div>
                 <div className="mt-6">
                   <label className="flex items-center gap-2 text-[9px] hacker-text-dim font-bold uppercase tracking-[0.2em] mb-2">
-                    <FileText className="w-3 h-3" /> SCRIPT_METADATA_INJECTOR
+                    <FileText className="w-3 h-3" /> OPTIONAL_ANALYSIS_NOTES
                   </label>
                   <textarea
                     className="w-full bg-black/40 border border-neonViolet/30 rounded-lg p-3 text-xs hacker-text placeholder-neonViolet/30 focus:outline-none focus:border-neonViolet transition-colors resize-none h-24"
-                    placeholder="ENTER SCENE CONTEXT OR LYRICS..."
+                    placeholder="RESERVED FOR FUTURE LOCAL-MODEL CONTEXT..."
                     value={scriptContext}
                     onChange={(e) => setScriptContext(e.target.value)}
                   />
                 </div>
                 
-                {error === "QUOTA_EXCEEDED" ? (
-                  <div className="mt-4 p-4 border border-red-500 bg-red-900/20 rounded flex flex-col gap-3">
-                     <div className="flex items-center gap-2">
-                       <AlertCircle className="text-red-500 w-4 h-4" />
-                       <h4 className="text-red-500 font-bold text-[10px] uppercase">QUOTA_EXCEEDED</h4>
-                     </div>
-                     <p className="text-[9px] hacker-text-dim">Analysis requires higher throughput. Switch to a paid key.</p>
-                     <button 
-                       onClick={handleOpenKeyDialog}
-                       className="w-full py-2 bg-red-950 border border-red-500 text-red-500 text-[10px] font-bold uppercase tracking-widest animate-pulse"
-                     >
-                       UPGRADE_KEY
-                     </button>
-                  </div>
-                ) : error && (
+                {error && (
                   <div className="mt-4 p-3 bg-red-950/30 border border-red-900 text-[10px] text-red-500 font-bold uppercase">{error}</div>
                 )}
 
                 <div className="mt-6 flex gap-2">
-                   <button onClick={togglePlay} disabled={!audioFile} className="flex-1 py-2 bg-black border border-neonViolet text-neonViolet text-[10px] font-bold uppercase tracking-widest hover:bg-neonViolet hover:text-black transition-all disabled:opacity-30">
+                   <button
+                     data-testid="audio-play-toggle"
+                     aria-label={isPlaying ? 'Pause audio' : 'Play audio'}
+                     onClick={togglePlay}
+                     disabled={!audioFile}
+                     className="flex-1 py-2 bg-black border border-neonViolet text-neonViolet text-[10px] font-bold uppercase tracking-widest hover:bg-neonViolet hover:text-black transition-all disabled:opacity-30"
+                   >
                       {isPlaying ? <Pause className="w-3 h-3 mx-auto" /> : <Play className="w-3 h-3 mx-auto" />}
                    </button>
-                   <button onClick={analyzeAudio} disabled={!audioFile || analysisStep !== 'idle'} className="flex-1 py-2 bg-black border border-hackerGreen text-hackerGreen text-[10px] font-bold uppercase tracking-widest hover:bg-hackerGreen hover:text-black transition-all shadow-[0_0_10px_rgba(0,255,65,0.3)] disabled:opacity-30">
+                   <button data-testid="process-signal" aria-label="Process audio signal locally" onClick={analyzeAudio} disabled={!audioFile || analysisStep !== 'idle'} className="flex-1 py-2 bg-black border border-hackerGreen text-hackerGreen text-[10px] font-bold uppercase tracking-widest hover:bg-hackerGreen hover:text-black transition-all shadow-[0_0_10px_rgba(0,255,65,0.3)] disabled:opacity-30">
                       {analysisStep !== 'idle' ? 'RUNNING...' : 'PROCESS_SIGNAL'}
                    </button>
                 </div>
              </div>
-             {segments.length > 0 && (
+             {(chordSegments.length > 0 || emotionSegments.length > 0) && (
                <div className="terminal-box p-6">
                   <div className="flex items-center justify-between mb-4 pb-2 border-b border-neonViolet/30">
                     <h3 className="text-[10px] font-bold hacker-text-dim uppercase tracking-[0.3em]">TELEMETRY_EXPORT</h3>
@@ -371,7 +337,7 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
                       {copySuccess ? 'COPIED' : 'COPY_BUFFER'}
                     </button>
                   </div>
-                  <textarea readOnly value={JSON.stringify({ trackInfo, segments, suggestions }, null, 2)} className="w-full h-40 bg-black text-[9px] hacker-text-dim border-none resize-none focus:outline-none scrollbar-hide" />
+                  <textarea readOnly value={JSON.stringify({ trackInfo, chordSegments, emotionSegments, suggestions }, null, 2)} className="w-full h-40 bg-black text-[9px] hacker-text-dim border-none resize-none focus:outline-none scrollbar-hide" />
                </div>
              )}
           </div>
@@ -384,6 +350,8 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
                 <div className="absolute inset-0 z-0">
                   <LiveVisualizer 
                     selectedKey={selectedKey}
+                    mediaElement={audioRef.current}
+                    isPlaying={isPlaying}
                     reservedFooterHeight={0}
                   />
                 </div>
@@ -397,25 +365,56 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
                     className="text-[9px] font-bold bg-black/70 border px-3 py-1 rounded tracking-widest"
                     style={{ color: selectedKey.primaryColor, borderColor: `${selectedKey.primaryColor}66` }}
                   >
-                    HARMONIC_CENTER: {selectedKey.displayName.toUpperCase()}
+                    CIRCLE_FOCUS: {selectedKey.displayName.toUpperCase()}
+                  </div>
+                  <div
+                    data-testid="current-timeline-state"
+                    className="text-[9px] font-bold bg-black/70 border border-cyan-400/50 px-3 py-1 rounded tracking-widest text-cyan-300"
+                  >
+                    {timelineMode === 'chords'
+                      ? `CURRENT_CHORD: ${activeChord?.chord ?? '--'} · CONF: ${Math.round((activeChord?.confidence ?? 0) * 100)}%`
+                      : `EMOTION: ${activeEmotion?.mood?.toUpperCase() ?? '--'} · V:${activeEmotion?.valence.toFixed(2) ?? '--'} A:${activeEmotion?.arousal.toFixed(2) ?? '--'}`}
                   </div>
                   <div
                     data-testid="resonance-waveform-status"
                     className="text-[9px] font-bold bg-black/70 border px-3 py-1 rounded tracking-widest"
                     style={{ color: selectedKey.primaryColor, borderColor: `${selectedKey.primaryColor}66` }}
                   >
-                    GENERATED_AROUSAL: {selectedKey.arousal.toFixed(2)}
+                    {isPlaying
+                      ? `SIGNAL_MODE: LIVE_AUDIO · A_BASE: ${selectedKey.arousal.toFixed(2)}`
+                      : `SIGNAL_MODE: AROUSAL_STANDBY · A_BASE: ${selectedKey.arousal.toFixed(2)}`}
                   </div>
                 </div>
              </div>
 
              {/* Rhythm / Timeline Panel */}
              <div className="terminal-box glass-shine p-6 space-y-4">
-                <div className="flex items-center justify-between border-b border-neonViolet/20 pb-2">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neonViolet/20 pb-2">
                    <h3 className="text-[10px] font-bold hacker-text-dim uppercase tracking-[0.3em] flex items-center gap-2">
                       <Activity className="w-3 h-3 text-neonViolet" /> RHYTHM_TIMELINE_WAVEFORM
                    </h3>
-                   <div className="text-[9px] hacker-text-dim italic tracking-widest">-- SIGNAL_FEED_CONNECTED --</div>
+                   <div className="flex items-center gap-1" role="group" aria-label="Timeline display mode">
+                     {(['chords', 'emotions'] as const).map(mode => (
+                       <button
+                         key={mode}
+                         type="button"
+                         data-testid={`timeline-mode-${mode}`}
+                         aria-pressed={timelineMode === mode}
+                         onClick={() => {
+                           activeChordIndexRef.current = -1;
+                           activeEmotionIndexRef.current = -1;
+                           setTimelineMode(mode);
+                         }}
+                         className={`px-3 py-1 text-[9px] font-bold tracking-widest border transition-colors ${
+                           timelineMode === mode
+                             ? 'border-hackerGreen bg-hackerGreen/15 text-hackerGreen'
+                             : 'border-neonViolet/40 text-neonViolet hover:bg-neonViolet/10'
+                         }`}
+                       >
+                         {mode.toUpperCase()}
+                       </button>
+                     ))}
+                   </div>
                 </div>
                 <div id="waveform" className="w-full h-[120px] filter hue-rotate-[280deg] relative">
                    {/* Dedicated WaveSurfer DOM Target (separate from React children) */}
@@ -441,12 +440,12 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="terminal-box p-4 flex flex-col items-center justify-center space-y-2 border-hackerGreen/40">
                      <Music className="w-4 h-4 text-hackerGreen" />
-                     <span className="text-[10px] hacker-text-dim uppercase tracking-widest">MUSICAL_KEY</span>
+                     <span className="text-[10px] hacker-text-dim uppercase tracking-widest">ESTIMATED_TONAL_CENTER</span>
                      <span className="text-xl font-bold hacker-text uppercase tracking-tighter">{trackInfo.key}</span>
                   </div>
                   <div className="terminal-box p-4 flex flex-col items-center justify-center space-y-2 border-neonViolet/40">
                      <Zap className="w-4 h-4 text-neonViolet" />
-                     <span className="text-[10px] hacker-text-dim uppercase tracking-widest">TEMPO_BPM</span>
+                     <span className="text-[10px] hacker-text-dim uppercase tracking-widest">ANALYSIS_ENGINE</span>
                      <span className="text-xl font-bold hacker-text tracking-tighter">{trackInfo.tempo}</span>
                   </div>
                   <div className="terminal-box p-4 flex flex-col items-center justify-center space-y-2 border-cyan-400/40">
@@ -460,31 +459,92 @@ const AppThree: React.FC<AppThreeProps> = ({ selectedKey, onBeat }) => {
              )}
 
              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                   <h3 className="text-xl font-bold hacker-text tracking-tighter uppercase tracking-[0.1em]">DETECTED_EMO_SEGMENTS</h3>
+                <div className="flex items-center justify-between gap-4">
+                   <div>
+                     <h3 className="text-xl font-bold hacker-text tracking-tighter uppercase tracking-[0.1em]">
+                       {timelineMode === 'chords' ? 'ESTIMATED_CHORD_CHANGES' : 'ESTIMATED_EMOTIONAL_CHANGES'}
+                     </h3>
+                     <p className="mt-1 text-[9px] hacker-text-dim uppercase tracking-widest">
+                       {timelineMode === 'chords'
+                         ? `${chordSegments.length} time-aligned harmonic sections · chroma template estimate`
+                         : `${emotionSegments.length} time-aligned valence/arousal sections · local feature heuristic`}
+                     </p>
+                   </div>
                    {analysisStep !== 'idle' && <div className="flex items-center gap-2 text-[10px] text-hackerGreen bg-hackerGreen/10 border border-hackerGreen/30 px-3 py-1 animate-pulse uppercase tracking-widest"><Loader2 className="w-3 h-3 animate-spin" /> SCANNING_MATRIX...</div>}
                 </div>
-                {segments.length > 0 ? (
-                  <div className="grid gap-3">
-                     {segments.map((seg, idx) => {
-                       const start = parseTime(seg.startTime);
-                       const end = parseTime(seg.endTime);
-                       const isActive = currentTime >= start && currentTime < end && isPlaying;
-                       const colors = getNearestKey({valence: seg.valence, arousal: seg.arousal}) ?? selectedKey;
-                       return (
-                        <div key={idx} className={`terminal-box glass-shine p-4 transition-all cursor-pointer relative overflow-hidden group ${isActive ? 'shadow-[0_0_20px_rgba(0,255,65,0.3)] border-hackerGreen' : 'border-neonViolet/30 hover:border-neonViolet'}`} onClick={() => { if (wavesurfer.current) { wavesurfer.current.setTime(start); wavesurfer.current.play(); }}}>
-                           <div className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: colors.primaryColor }} />
-                           <div className="flex justify-between items-center mb-1">
-                              <span className="font-bold hacker-text uppercase text-xs tracking-widest">{seg.mood}</span>
-                              <span className="text-[9px] hacker-text-dim uppercase tracking-widest">{seg.startTime} &gt;&gt; {seg.endTime}</span>
-                           </div>
-                           <p className="text-[10px] hacker-text-dim group-hover:text-hackerGreen transition-colors italic">"{seg.description}"</p>
-                        </div>
-                       );
-                     })}
+
+                {timelineMode === 'chords' && chordSegments.length > 0 && (
+                  <div className="grid gap-2">
+                    {chordSegments.map((segment, index) => {
+                      const isActive = index === activeChordIndex;
+                      const mappedKey = segment.mappedKeyId
+                        ? EMOTIONAL_KEYS.find(key => key.id === segment.mappedKeyId) ?? selectedKey
+                        : selectedKey;
+                      return (
+                        <button
+                          key={`${segment.startTime}-${segment.chord}`}
+                          type="button"
+                          data-testid={`chord-segment-${index}`}
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            wavesurfer.current?.setTime(segment.startTime);
+                            void wavesurfer.current?.play();
+                          }}
+                          className={`terminal-box glass-shine p-3 text-left transition-all relative overflow-hidden group ${isActive ? 'shadow-[0_0_20px_rgba(0,255,65,0.3)] border-hackerGreen' : 'border-neonViolet/30 hover:border-neonViolet'}`}
+                        >
+                          <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: mappedKey.primaryColor }} />
+                          <span className="flex justify-between items-center gap-4 pl-2">
+                            <span className="text-lg font-black text-cyan-300 tracking-widest">{segment.chord}</span>
+                            <span className="text-[9px] hacker-text-dim tracking-widest">
+                              {formatTime(segment.startTime)} &gt;&gt; {formatTime(segment.endTime)} · CONF {Math.round(segment.confidence * 100)}%
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
-                ) : (
-                  analysisStep === 'idle' && <div className="text-center py-10 terminal-box border-dashed border-neonViolet/20 hacker-text-dim text-[10px] uppercase tracking-widest">SIGNAL_INPUT_REQUIRED</div>
+                )}
+
+                {timelineMode === 'emotions' && emotionSegments.length > 0 && (
+                  <div className="grid gap-3">
+                    {emotionSegments.map((segment, index) => {
+                      const isActive = index === activeEmotionIndex;
+                      const mappedKey = segment.mappedKeyId
+                        ? EMOTIONAL_KEYS.find(key => key.id === segment.mappedKeyId) ?? selectedKey
+                        : selectedKey;
+                      return (
+                        <button
+                          key={`${segment.startTime}-${segment.mood}`}
+                          type="button"
+                          data-testid={`emotion-segment-${index}`}
+                          aria-pressed={isActive}
+                          onClick={() => {
+                            wavesurfer.current?.setTime(segment.startTime);
+                            void wavesurfer.current?.play();
+                          }}
+                          className={`terminal-box glass-shine p-4 text-left transition-all relative overflow-hidden group ${isActive ? 'shadow-[0_0_20px_rgba(0,255,65,0.3)] border-hackerGreen' : 'border-neonViolet/30 hover:border-neonViolet'}`}
+                        >
+                          <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: mappedKey.primaryColor }} />
+                          <span className="flex justify-between items-center gap-4 pl-2">
+                            <span>
+                              <span className="block font-bold hacker-text uppercase text-xs tracking-widest">{segment.mood}</span>
+                              <span className="block mt-1 text-[10px] hacker-text-dim italic">{segment.description}</span>
+                            </span>
+                            <span className="text-right text-[9px] hacker-text-dim uppercase tracking-widest whitespace-nowrap">
+                              <span className="block">{formatTime(segment.startTime)} &gt;&gt; {formatTime(segment.endTime)}</span>
+                              <span className="block mt-1 text-cyan-300">V {segment.valence.toFixed(2)} · A {segment.arousal.toFixed(2)}</span>
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {analysisStep === 'idle' && chordSegments.length === 0 && emotionSegments.length === 0 && (
+                  <div className="text-center py-10 terminal-box border-dashed border-neonViolet/20 hacker-text-dim text-[10px] uppercase tracking-widest">
+                    LOAD_AUDIO_THEN_PROCESS_SIGNAL
+                  </div>
                 )}
              </div>
           </div>
