@@ -4,14 +4,13 @@ import EmoKeyApp from './components/EmoKeyApp';
 import AppTwo from './components/AppTwo';
 import AppThree from './components/AppThree';
 import { EMOTIONAL_KEYS } from './constants';
-import { EmotionState, MusicalKeyId } from './types';
+import { MusicalKeyId } from './types';
 
 const DEFAULT_SELECTED_KEY_ID: MusicalKeyId = 'C_MAJOR';
 
 const App: React.FC = () => {
   const [manualSelectedKeyId, setManualSelectedKeyId] = useState<MusicalKeyId>(DEFAULT_SELECTED_KEY_ID);
   const [playbackKeyId, setPlaybackKeyId] = useState<MusicalKeyId | null>(null);
-  const [playbackEmotion, setPlaybackEmotion] = useState<EmotionState | null>(null);
   const [lastBeatTimestamp, setLastBeatTimestamp] = useState<number>(0);
   const [hasPaidKey, setHasPaidKey] = useState(false);
 
@@ -38,7 +37,6 @@ const App: React.FC = () => {
     }
     setManualSelectedKeyId(candidate.id);
     setPlaybackKeyId(null);
-    setPlaybackEmotion(null);
   }, []);
 
   const handlePlaybackKeyChange = useCallback((candidateId: MusicalKeyId | null) => {
@@ -48,10 +46,6 @@ const App: React.FC = () => {
     }
     const candidate = EMOTIONAL_KEYS.find(key => key.id === candidateId);
     if (candidate) setPlaybackKeyId(candidate.id);
-  }, []);
-
-  const handlePlaybackEmotionChange = useCallback((emotion: EmotionState | null) => {
-    setPlaybackEmotion(emotion);
   }, []);
 
   const selectedKeyId = playbackKeyId ?? manualSelectedKeyId;
@@ -150,7 +144,6 @@ const App: React.FC = () => {
           </div>
           <AppTwo
             selectedKey={selectedKey}
-            playbackEmotion={playbackEmotion}
             onSelectedKeyChange={handleSelectedKeyChange}
             beatTrigger={lastBeatTimestamp}
           />
@@ -165,16 +158,15 @@ const App: React.FC = () => {
         <section id="audio-analysis" className="relative scroll-mt-24">
           <div className="max-w-7xl mx-auto px-6 pt-10 pb-2">
             <h2 className="text-2xl font-bold flex items-center gap-3 hacker-text">
-               <span className="text-neonViolet">&gt;</span> 03_EMO_TIMELINE
+               <span className="text-neonViolet">&gt;</span> 03_HARMONIC_ANALYZER
             </h2>
              <p className="hacker-text-dim mt-1 max-w-2xl text-xs">
-               REAL-TIME WAVEFORM DECONSTRUCTION AND AROUSAL_MAPPING.
+               REAL-TIME PITCH-CLASS, CHORD-EVIDENCE, AND WAVEFORM ANALYSIS.
             </p>
           </div>
           <AppThree
             selectedKey={selectedKey}
             onPlaybackKeyChange={handlePlaybackKeyChange}
-            onPlaybackEmotionChange={handlePlaybackEmotionChange}
             onBeat={handleBeat}
           />
         </section>

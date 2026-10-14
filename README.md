@@ -7,19 +7,20 @@ This system is a self-contained exploration of harmonic resonance. It maps music
 
 ### Design Framework
 - **Emotional Mapping**: Utilizes a DEAM-inspired (Database for Emotional Analysis in Music) 2D valence/arousal coordinate system.
+- **Canonical Coordinates**: Valence and arousal both use a single `-1.0` to `+1.0` circumplex scale throughout controls, key mapping, timelines, and visualizers.
 - **Key Association**: Individual key mappings are curated artistic and music-theory heuristics. They are exploratory associations, not psychological diagnosis or empirically definitive measurements of emotion.
 
-### Resonance Waveform
-- During playback, the Resonance Waveform uses local Web Audio frequency and time-domain data from the loaded song. Bass, mid, high, and RMS energy drive its displacement, complexity, glow, orbital pulse, and motion speed.
-- The selected key's mapped arousal remains a visual baseline, while the selected key controls the waveform color and harmonic identity.
-- When playback is stopped or no analyser is available, the panel falls back to a restrained arousal-driven standby signal.
-- Live signal reactivity is visual only; it does not claim to infer the listener's emotional or psychological state.
+### Harmonic Evidence Visualizer
+- The live analyzer is driven only by measured Web Audio features: low/mid/high energy, waveform samples, and a 12-bin pitch-class chromagram.
+- The pitch-class ring uses Circle-of-Fifths visualization colors. Node size and brightness follow measured chroma energy; root/third/fifth geometry follows the active chord candidate.
+- `CONF` is relative harmonic evidence from the existing 24-template major/minor comparison. It is not a calibrated probability of correctness.
+- Replacement chords must persist for 14 consecutive analysis frames before becoming active. LOW evidence remains steady dim amber; MOD is cyan; HIGH is green.
 
 ### Local Timeline Analysis
-- **Chord mode** uses local chroma features to estimate timestamped major/minor chord changes. The current chord label updates during playback and its root drives the Circle focus.
-- **Emotion mode** divides the track into local analysis windows and derives changing valence/arousal estimates from energy, brightness, and harmonic character. These values drive `EMO_PROBE_01` and the nearest Circle key while that mode is active.
-- The timeline toggle switches the display and playback driver between chord progression and emotion trajectory. Chord and emotion sections are intentionally independent, so their counts do not need to match.
-- Analysis runs in the browser through Meyda and the Web Audio API. The results are musical estimates, not authoritative transcription or psychological measurement.
+- The chord timeline uses local chroma features to estimate timestamped major/minor chord changes. The current chord label updates during playback and its root drives the separate Circle focus.
+- Audio playback does not infer valence, arousal, moods, or emotional labels. The Emotional Matrix and Resonance sections remain separate manual creative tools.
+- Analysis runs in the browser through Meyda and the Web Audio API. The results are harmonic estimates, not authoritative transcription.
+- Offline processing accepts audio files up to 256 MB and tracks up to 20 minutes. Larger material should be split into song-length files before analysis.
 
 ## Operational Modes
 1. **Songwriter Mode**: Focuses on individual key analysis, offering emotional heuristics and songwriting texture advice based on the selected harmonic center.
@@ -37,7 +38,7 @@ This system is a self-contained exploration of harmonic resonance. It maps music
    The application will be running at `http://localhost:3000`.
 
 ## Architecture Notes
-- **Offline-first Logic**: Chord timing and emotion trajectories are derived locally. Existing written transition insights still use the local rules endpoint.
+- **Offline-first Logic**: Chord timing is derived locally. Existing written transition insights still use the local rules endpoint.
 - **Zero Cloud Requirement**: Audio analysis does not upload the song or require an API key.
 - **Optional Future Model**: A local Gemma companion can later enrich mood descriptions or interpret supplied context, but deterministic audio features should remain responsible for timestamp accuracy.
 

@@ -118,6 +118,8 @@ const AppTwo: React.FC<AppTwoProps> = ({ selectedKey, playbackEmotion, onSelecte
                 mediaElement={null} 
                 isPlaying={true} 
                 selectedKey={selectedKey}
+                primaryEmotion={e1}
+                secondaryEmotion={e2}
                 beatTrigger={beatTrigger}
               />
             </div>

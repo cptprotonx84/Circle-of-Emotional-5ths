@@ -67,7 +67,7 @@ const EmotionDetail: React.FC<EmotionDetailProps> = ({ data }) => {
         <div className="w-full bg-black border border-neonViolet/30 h-1 mt-3 overflow-hidden shadow-[inset_0_0_5px_rgba(0,0,0,1)]">
           <div 
              className="h-full bg-hackerGreen shadow-[0_0_10px_#00ff41] transition-all duration-1000 ease-out" 
-             style={{ width: `${data.arousal * 100}%` }} 
+             style={{ width: `${((data.arousal + 1) / 2) * 100}%` }}
           />
         </div>
       </div>

@@ -2,8 +2,10 @@ import Meyda from 'meyda';
 import { EMOTIONAL_KEYS } from '../constants';
 import { MusicalKeyId } from '../types';
 import { getNearestKey } from './emotionMath';
+import { estimateChordFromChroma, ChordQuality } from './chordAnalysis';
 
-export type ChordQuality = 'Major' | 'Minor';
+export { estimateChordFromChroma } from './chordAnalysis';
+export type { ChordQuality } from './chordAnalysis';
 
 export interface ChordFrame {
   time: number;
@@ -41,59 +43,31 @@ export interface LocalAudioAnalysis {
   globalKey: string;
   chordProgression: string;
   chordSegments: ChordTimelineSegment[];
-  emotionSegments: EmotionTimelineSegment[];
 }
 
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
 const BUFFER_SIZE = 4096;
 const ANALYSIS_HOP_SECONDS = 0.5;
 const MIN_CHORD_SECONDS = 1.25;
 const EMOTION_WINDOW_SECONDS = 6;
+export const MAX_LOCAL_AUDIO_BYTES = 256 * 1024 * 1024;
+export const MAX_LOCAL_AUDIO_DURATION_SECONDS = 20 * 60;
 
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 const clamp01 = (value: number) => clamp(value, 0, 1);
 
-const chordName = (root: string, quality: ChordQuality) => `${root}${quality === 'Minor' ? 'm' : ''}`;
+export const validateLocalAudioFileSize = (size: number) => {
+  if (!Number.isFinite(size) || size <= 0) {
+    throw new Error('LOCAL_ANALYSIS_INPUT: the selected audio file is empty or unreadable.');
+  }
+  if (size > MAX_LOCAL_AUDIO_BYTES) {
+    throw new Error('LOCAL_ANALYSIS_LIMIT: select an audio file no larger than 256MB.');
+  }
+};
 
 const mapChordToCircle = (root: string, quality: ChordQuality): MusicalKeyId | null => {
   const exact = EMOTIONAL_KEYS.find(key => key.root === root && key.quality === quality);
   const rootProxy = EMOTIONAL_KEYS.find(key => key.root === root);
   return exact?.id ?? rootProxy?.id ?? null;
-};
-
-export const estimateChordFromChroma = (chroma: number[]) => {
-  const normalized = Array.from({ length: 12 }, (_, index) => Math.max(0, chroma[index] ?? 0));
-  const total = normalized.reduce((sum, value) => sum + value, 0) || 1;
-  const candidates: Array<{ rootIndex: number; quality: ChordQuality; score: number }> = [];
-
-  for (let rootIndex = 0; rootIndex < 12; rootIndex += 1) {
-    for (const quality of ['Major', 'Minor'] as const) {
-      const thirdOffset = quality === 'Major' ? 4 : 3;
-      const rootEnergy = normalized[rootIndex];
-      const thirdEnergy = normalized[(rootIndex + thirdOffset) % 12];
-      const fifthEnergy = normalized[(rootIndex + 7) % 12];
-      const triadEnergy = rootEnergy + thirdEnergy * 0.88 + fifthEnergy * 0.76;
-      const outsideEnergy = Math.max(0, total - rootEnergy - thirdEnergy - fifthEnergy);
-      candidates.push({
-        rootIndex,
-        quality,
-        score: triadEnergy - outsideEnergy * 0.085,
-      });
-    }
-  }
-
-  candidates.sort((left, right) => right.score - left.score);
-  const best = candidates[0];
-  const runnerUp = candidates[1];
-  const root = NOTE_NAMES[best.rootIndex];
-  const confidence = clamp01((best.score - runnerUp.score) / Math.max(0.12, Math.abs(best.score)));
-
-  return {
-    chord: chordName(root, best.quality),
-    root,
-    quality: best.quality,
-    confidence,
-  };
 };
 
 const smoothChordFrames = (frames: ChordFrame[]) => frames.map((frame, index) => {
@@ -174,10 +148,10 @@ const percentile = (values: number[], ratio: number) => {
 };
 
 const describeEmotion = (valence: number, arousal: number) => {
-  if (arousal >= 0.68 && valence >= 0.25) return { mood: 'Energized', description: 'Bright, high-energy spectral movement.' };
-  if (arousal >= 0.68 && valence < 0.25) return { mood: 'Tense', description: 'High energy with a darker harmonic profile.' };
-  if (arousal < 0.4 && valence >= 0.25) return { mood: 'Serene', description: 'Restrained energy with a brighter spectral balance.' };
-  if (arousal < 0.4 && valence < 0.25) return { mood: 'Reflective', description: 'Low energy with a darker spectral balance.' };
+  if (arousal >= 0.36 && valence >= 0.25) return { mood: 'Energized', description: 'Bright, high-energy spectral movement.' };
+  if (arousal >= 0.36 && valence < 0.25) return { mood: 'Tense', description: 'High energy with a darker harmonic profile.' };
+  if (arousal < -0.2 && valence >= 0.25) return { mood: 'Serene', description: 'Restrained energy with a brighter spectral balance.' };
+  if (arousal < -0.2 && valence < 0.25) return { mood: 'Reflective', description: 'Low energy with a darker spectral balance.' };
   return { mood: valence >= 0 ? 'Open' : 'Brooding', description: 'Moderate energy with evolving spectral color.' };
 };
 
@@ -195,7 +169,8 @@ const buildEmotionSegments = (frames: ChordFrame[], duration: number): EmotionTi
     const centroid = windowFrames.reduce((sum, frame) => sum + frame.spectralCentroid, 0) / windowFrames.length;
     const majorRatio = windowFrames.filter(frame => frame.quality === 'Major').length / windowFrames.length;
     const confidence = windowFrames.reduce((sum, frame) => sum + frame.confidence, 0) / windowFrames.length;
-    const arousal = clamp01((rms / rmsReference) * 0.82);
+    const normalizedEnergy = clamp01((rms / rmsReference) * 0.82);
+    const arousal = normalizedEnergy * 2 - 1;
     const brightness = clamp01(centroid / 160);
     const valence = clamp(-0.72 + brightness * 1.18 + majorRatio * 0.34, -1, 1);
     const mappedKey = getNearestKey({ valence, arousal });
@@ -233,15 +208,21 @@ const progressionLabel = (segments: ChordTimelineSegment[]) => {
 };
 
 export const analyzeAudioLocally = async (file: File): Promise<LocalAudioAnalysis> => {
-  if (file.size > 40 * 1024 * 1024) {
-    throw new Error('LOCAL_ANALYSIS_LIMIT: files over 40MB require a streamed analysis backend.');
-  }
+  validateLocalAudioFileSize(file.size);
 
   const audioContext = new (window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
   try {
-    const audioBuffer = await audioContext.decodeAudioData(await file.arrayBuffer());
-    if (audioBuffer.duration > 20 * 60) {
-      throw new Error('LOCAL_ANALYSIS_LIMIT: tracks over 20 minutes require a streamed analysis backend.');
+    let audioBuffer: AudioBuffer;
+    try {
+      audioBuffer = await audioContext.decodeAudioData(await file.arrayBuffer());
+    } catch {
+      throw new Error('LOCAL_ANALYSIS_INPUT: this audio format could not be decoded. Try WAV, MP3, M4A, or FLAC supported by your browser.');
+    }
+    if (!Number.isFinite(audioBuffer.duration) || audioBuffer.duration <= 0) {
+      throw new Error('LOCAL_ANALYSIS_INPUT: the decoded audio contains no playable duration.');
+    }
+    if (audioBuffer.duration > MAX_LOCAL_AUDIO_DURATION_SECONDS) {
+      throw new Error('LOCAL_ANALYSIS_LIMIT: select a track no longer than 20 minutes for offline analysis.');
     }
 
     const source = audioBuffer.getChannelData(0);
@@ -271,13 +252,11 @@ export const analyzeAudioLocally = async (file: File): Promise<LocalAudioAnalysi
     }
 
     const chordSegments = buildChordSegmentsFromFrames(frames, audioBuffer.duration);
-    const emotionSegments = buildEmotionSegments(frames, audioBuffer.duration);
     return {
       duration: audioBuffer.duration,
       globalKey: dominantChord(chordSegments),
       chordProgression: progressionLabel(chordSegments),
       chordSegments,
-      emotionSegments,
     };
   } finally {
     await audioContext.close();

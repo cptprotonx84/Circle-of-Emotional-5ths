@@ -42,8 +42,8 @@ export interface ChartDataPoint {
 }
 
 export interface EmotionState {
-  valence: number;
-  arousal: number;
+  valence: number; // Canonical circumplex coordinate: -1 (negative) to +1 (positive)
+  arousal: number; // Canonical circumplex coordinate: -1 (low energy) to +1 (high energy)
 }
 
 export interface AnalysisResult {

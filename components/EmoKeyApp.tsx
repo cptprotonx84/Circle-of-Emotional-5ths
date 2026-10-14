@@ -51,7 +51,13 @@ const EmoKeyApp: React.FC<EmoKeyAppProps> = ({ selectedKeyId, onSelectedKeyChang
       </CollapsibleSection>
 
       <CollapsibleSection title="Emotion Map" icon={Target} isOpen={openSections.map} onToggle={() => toggleSection('map')}>
-        <ValenceArousalChart data={EMOTIONAL_KEYS} selectedId={selectedKeyId} onSelect={onSelectedKeyChange} />
+        <ValenceArousalChart
+          data={EMOTIONAL_KEYS}
+          selectedId={selectedKeyId}
+          hoveredId={hoveredId}
+          onSelect={onSelectedKeyChange}
+          onHover={setHoveredId}
+        />
       </CollapsibleSection>
 
       <CollapsibleSection title="Transition Analyzer" icon={Activity} isOpen={openSections.analyzer} onToggle={() => toggleSection('analyzer')}>

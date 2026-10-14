@@ -53,7 +53,7 @@ async function startServer() {
     res.json({
       trackInfo: { key: "C Major", tempo: "120", chords: "C - Am - F - G" },
       segments: [
-        { startTime: "00:00", endTime: "01:30", description: "Calm introduction", mood: "Peaceful", valence: 0.5, arousal: 0.2 },
+        { startTime: "00:00", endTime: "01:30", description: "Calm introduction", mood: "Peaceful", valence: 0.5, arousal: -0.6 },
         { startTime: "01:30", endTime: "03:00", description: "Energetic climax", mood: "Excitement", valence: 0.8, arousal: 0.9 }
       ],
       suggestions: [{ target: "G Major", weights: "High", advice: "Brighten the harmonic texture" }]

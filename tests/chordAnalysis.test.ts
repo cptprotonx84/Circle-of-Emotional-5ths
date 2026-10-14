@@ -5,7 +5,20 @@ import {
   ChordFrame,
   ChordQuality,
   estimateChordFromChroma,
+  MAX_LOCAL_AUDIO_BYTES,
+  validateLocalAudioFileSize,
 } from '../utils/localAudioAnalysis';
+
+assert.doesNotThrow(() => validateLocalAudioFileSize(41 * 1024 * 1024));
+assert.doesNotThrow(() => validateLocalAudioFileSize(MAX_LOCAL_AUDIO_BYTES));
+assert.throws(
+  () => validateLocalAudioFileSize(0),
+  /selected audio file is empty or unreadable/,
+);
+assert.throws(
+  () => validateLocalAudioFileSize(MAX_LOCAL_AUDIO_BYTES + 1),
+  /no larger than 256MB/,
+);
 
 const chromaForChord = (rootIndex: number, quality: ChordQuality) => {
   const chroma = Array.from({ length: 12 }, () => 0.02);

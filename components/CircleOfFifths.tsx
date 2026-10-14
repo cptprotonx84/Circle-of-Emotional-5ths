@@ -17,6 +17,7 @@ type ActiveWedgeStyle = 'gradient' | 'wave' | 'aurora';
 
 // Change this single value to compare the three prototype treatments.
 const ACTIVE_WEDGE_STYLE: ActiveWedgeStyle = 'aurora';
+const normalizeArousal = (value: number) => Math.min(1, Math.max(0, (value + 1) / 2));
 
 const polarPoint = (angle: number, pointRadius: number) => ({
   x: Math.sin(angle) * pointRadius,
@@ -32,11 +33,11 @@ const describeArcLine = (startAngle: number, endAngle: number, lineRadius: numbe
 
 const WaveformOverlay: React.FC<{ arousal: number; color: string; radius: number }> = ({ arousal, color, radius }) => {
   const pathRef = useRef<SVGPathElement>(null);
-  const targetArousalRef = useRef(Math.min(1, Math.max(0, arousal)));
+  const targetArousalRef = useRef(normalizeArousal(arousal));
   const currentArousalRef = useRef(targetArousalRef.current);
 
   useEffect(() => {
-    targetArousalRef.current = Math.min(1, Math.max(0, arousal));
+    targetArousalRef.current = normalizeArousal(arousal);
   }, [arousal]);
 
   useEffect(() => {
@@ -100,8 +101,9 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({
       .pie<EmotionalKeyData>()
       .value(1)
       .sort((a, b) => a.keyPosition - b.keyPosition)
-      .startAngle(-Math.PI / 2 + Math.PI / 12)
-      .endAngle(1.5 * Math.PI + Math.PI / 12);
+      // D3 measures angle zero at 12 o'clock. Offset by half a wedge so C is centered there.
+      .startAngle(-Math.PI / 12)
+      .endAngle(Math.PI * 2 - Math.PI / 12);
 
     return pie(data);
   }, [data]);
@@ -125,6 +127,28 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({
   const activeKey = activeData?.root ?? '—';
   const activeMode = activeData?.quality.toUpperCase() ?? '';
   const activeEmotion = activeData?.emotion.replace('_', ' ') ?? 'SELECT A KEY';
+  const harmonicConnections = useMemo(() => {
+    if (!activeData) return [];
+    const webRadius = centerRadius - 8;
+    const pointForPosition = (position: number) => {
+      const normalizedPosition = ((position - 1 + data.length) % data.length) + 1;
+      return polarPoint((normalizedPosition - 1) * (Math.PI * 2 / data.length), webRadius);
+    };
+    const source = pointForPosition(activeData.keyPosition);
+    const targets = [
+      { position: activeData.keyPosition + 1, label: 'DOMINANT', color: activeData.primaryColor, dashed: false },
+      { position: activeData.keyPosition - 1, label: 'SUBDOMINANT', color: activeData.secondaryColor, dashed: false },
+      { position: activeData.keyPosition + 6, label: 'TRITONE', color: '#d000ff', dashed: true },
+    ];
+
+    return targets.map(target => {
+      const destination = pointForPosition(target.position);
+      return {
+        ...target,
+        path: `M ${source.x} ${source.y} Q 0 0 ${destination.x} ${destination.y}`,
+      };
+    });
+  }, [activeData, data.length]);
 
   return (
     <div className="relative flex w-full items-center justify-center select-none" aria-label="Interactive Circle of Fifths">
@@ -266,7 +290,7 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({
                   strokeWidth={isActive ? 2.3 : 3}
                   filter={isActive ? 'url(#active-wedge-edge)' : undefined}
                   vectorEffect="non-scaling-stroke"
-                  animate={{ scale: isActive ? 1.025 : 1 }}
+                  animate={{ scale: isSelected ? 1.055 : isHovered ? 1.03 : 1 }}
                   transition={{ type: 'spring', stiffness: 300, damping: 24 }}
                 />
                 {isNeighbor && activeData && (
@@ -365,6 +389,23 @@ const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({
             strokeWidth="2"
           />
           <circle r="54" fill="none" stroke="#202a3a" strokeWidth="1" strokeDasharray="2 8" opacity="0.9" />
+
+          <g pointerEvents="none" aria-hidden="true">
+            {harmonicConnections.map((connection, index) => (
+              <motion.path
+                key={`${connection.label}-${activeData?.id ?? 'idle'}`}
+                d={connection.path}
+                fill="none"
+                stroke={connection.color}
+                strokeWidth={connection.dashed ? 1 : 1.5}
+                strokeDasharray={connection.dashed ? '3 5' : undefined}
+                initial={{ pathLength: 0, opacity: 0 }}
+                animate={{ pathLength: 1, opacity: connection.dashed ? 0.3 : 0.55 }}
+                transition={{ duration: 0.42, delay: index * 0.05, ease: 'easeOut' }}
+                filter="url(#circle-glow)"
+              />
+            ))}
+          </g>
 
           <g pointerEvents="none" textAnchor="middle">
             <text
