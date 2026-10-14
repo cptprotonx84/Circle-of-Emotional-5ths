@@ -2,9 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Upload, Play, Pause, Loader2, FileText, Terminal, Key, Activity, Music, Zap, Layers } from 'lucide-react';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
-import { EmotionalKeyData, MusicalKeyId } from '../types';
 import LiveVisualizer, { LiveChordSnapshot } from './LiveVisualizer';
-import { EMOTIONAL_KEYS } from '../constants';
+import {
+  CIRCLE_OF_FIFTHS_PITCH_CLASSES,
+  confidenceTier,
+  NOTE_NAMES,
+  pitchClassIndexForNote,
+  PITCH_CLASS_COLORS,
+  triadPitchClasses,
+} from '../utils/realtimeChordAnalysis';
 import {
   analyzeAudioLocally,
   ChordTimelineSegment,
@@ -24,15 +30,11 @@ interface ShiftSuggestion {
 }
 
 interface AppThreeProps {
-  selectedKey: EmotionalKeyData;
-  onPlaybackKeyChange?: (id: MusicalKeyId | null) => void;
   onBeat?: () => void;
 }
 
 type AnalysisStep = 'idle' | 'optimizing' | 'analyzing_key' | 'analyzing_segments';
 const AppThree: React.FC<AppThreeProps> = ({
-  selectedKey,
-  onPlaybackKeyChange,
   onBeat,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -55,7 +57,6 @@ const AppThree: React.FC<AppThreeProps> = ({
   const [currentTime, setCurrentTime] = useState(0);
   const [copySuccess, setCopySuccess] = useState(false);
 
-  const activeChordIndexRef = useRef<number>(-1);
   const lastBeatIndexRef = useRef<number>(-1);
 
   useEffect(() => {
@@ -88,12 +89,11 @@ const AppThree: React.FC<AppThreeProps> = ({
     if (!wsRegions.current) return;
     wsRegions.current.clearRegions();
     chordSegments.forEach(segment => {
-      const mappedKey = segment.mappedKeyId
-        ? EMOTIONAL_KEYS.find(key => key.id === segment.mappedKeyId) ?? EMOTIONAL_KEYS[0]
-        : EMOTIONAL_KEYS[0];
-      const red = parseInt(mappedKey.primaryColor.slice(1, 3), 16);
-      const green = parseInt(mappedKey.primaryColor.slice(3, 5), 16);
-      const blue = parseInt(mappedKey.primaryColor.slice(5, 7), 16);
+      const pitchClass = pitchClassIndexForNote(segment.root);
+      const color = pitchClass === null ? '#5c708e' : PITCH_CLASS_COLORS[pitchClass];
+      const red = parseInt(color.slice(1, 3), 16);
+      const green = parseInt(color.slice(3, 5), 16);
+      const blue = parseInt(color.slice(5, 7), 16);
       wsRegions.current.addRegion({
         start: segment.startTime,
         end: segment.endTime,
@@ -116,13 +116,7 @@ const AppThree: React.FC<AppThreeProps> = ({
   const activeChordIndex = findActiveIndex(chordSegments);
   const activeChord = activeChordIndex >= 0 ? chordSegments[activeChordIndex] : null;
 
-  // The analyzed chord timeline remains the only playback stream that drives the separate Circle UI.
   useEffect(() => {
-    if (activeChordIndex !== -1 && activeChordIndex !== activeChordIndexRef.current) {
-      activeChordIndexRef.current = activeChordIndex;
-      onPlaybackKeyChange?.(chordSegments[activeChordIndex].mappedKeyId);
-    }
-
     if (detectedBeats.length && onBeat) {
       const currentBeatIndex = detectedBeats.findIndex(beat => currentTime >= beat && currentTime < beat + 0.1);
       if (currentBeatIndex !== -1 && currentBeatIndex !== lastBeatIndexRef.current) {
@@ -131,17 +125,10 @@ const AppThree: React.FC<AppThreeProps> = ({
       }
     }
   }, [
-    activeChordIndex,
-    chordSegments,
     currentTime,
     detectedBeats,
     onBeat,
-    onPlaybackKeyChange,
   ]);
-
-  useEffect(() => () => {
-    onPlaybackKeyChange?.(null);
-  }, [onPlaybackKeyChange]);
 
   const detectBeats = async (file: File) => {
     // Only attempt full decoding if the file size is safe (less than 3.5MB) to prevent browser tab crash (OOM)
@@ -209,9 +196,7 @@ const AppThree: React.FC<AppThreeProps> = ({
       setTrackInfo(null);
       setSuggestions([]);
       setError(null);
-      activeChordIndexRef.current = -1;
       lastBeatIndexRef.current = -1;
-      onPlaybackKeyChange?.(null);
 
       // Trigger beat detection locally
       await detectBeats(file);
@@ -252,20 +237,44 @@ const AppThree: React.FC<AppThreeProps> = ({
         tempo: 'LOCAL_ESTIMATE',
         chords: analysis.chordProgression,
       });
-      activeChordIndexRef.current = -1;
     } catch (err: any) {
       setError("ANALYSIS_HALTED: " + (err.message || "SIGNAL_LOST"));
     } finally { setAnalysisStep('idle'); }
   };
 
-  const liveConfidence = liveChord?.evidence.confidence ?? 0;
-  const liveTier = liveChord?.tier ?? 'LOW';
-  const liveLabel = liveTier === 'LOW' ? 'CHORD_CANDIDATE' : 'CURRENT_CHORD';
-  const liveTierClass = liveTier === 'HIGH'
+  const displayedChord = activeChord?.chord ?? liveChord?.evidence.chord ?? '--';
+  const displayedConfidence = activeChord?.confidence ?? liveChord?.evidence.confidence ?? 0;
+  const displayedTier = activeChord ? confidenceTier(activeChord.confidence) : liveChord?.tier ?? 'LOW';
+  const displayedLabel = displayedTier === 'LOW' ? 'CHORD_CANDIDATE' : 'CURRENT_CHORD';
+  const liveTierClass = displayedTier === 'HIGH'
     ? 'border-green-500/60 text-green-400'
-    : liveTier === 'MOD'
+    : displayedTier === 'MOD'
       ? 'border-cyan-400/60 text-cyan-300'
       : 'border-amber-600/60 text-amber-500';
+  const displayedRoot = activeChord?.root ?? liveChord?.evidence.root ?? null;
+  const displayedQuality = activeChord?.quality ?? liveChord?.evidence.quality ?? null;
+  const displayedRootIndex = displayedRoot ? pitchClassIndexForNote(displayedRoot) : null;
+  const displayedTriad = displayedRootIndex !== null && displayedQuality
+    ? triadPitchClasses(displayedRootIndex, displayedQuality)
+    : null;
+  const measuredChroma = liveChord?.evidence.chroma ?? [];
+  const harmonicNodes = CIRCLE_OF_FIFTHS_PITCH_CLASSES.map((pitchClass, orderIndex) => {
+    const angle = -Math.PI / 2 + orderIndex * Math.PI / 6;
+    return {
+      pitchClass,
+      x: 110 + Math.cos(angle) * 77,
+      y: 105 + Math.sin(angle) * 77,
+      energy: measuredChroma[pitchClass] ?? 0,
+    };
+  });
+  const harmonicNodeFor = (pitchClass: number) => harmonicNodes.find(node => node.pitchClass === pitchClass);
+  const harmonicEdges = displayedTriad
+    ? [
+        [displayedTriad.rootIndex, displayedTriad.thirdIndex],
+        [displayedTriad.thirdIndex, displayedTriad.fifthIndex],
+        [displayedTriad.fifthIndex, displayedTriad.rootIndex],
+      ]
+    : [];
 
   return (
     <div className="w-full p-4 md:p-8 max-w-7xl mx-auto text-hackerGreen">
@@ -334,7 +343,8 @@ const AppThree: React.FC<AppThreeProps> = ({
                     mediaElement={audioRef.current}
                     isPlaying={isPlaying}
                     reservedFooterHeight={0}
-                     onChordEvidence={setLiveChord}
+                    timelineChord={activeChord}
+                    onChordEvidence={setLiveChord}
                   />
                 </div>
                 
@@ -346,7 +356,7 @@ const AppThree: React.FC<AppThreeProps> = ({
                     data-testid="harmonic-evidence-hud"
                     className={`text-[9px] font-bold bg-black/70 border px-3 py-1 rounded tracking-widest ${liveTierClass}`}
                   >
-                    HARMONIC EVIDENCE HUD · {liveLabel}: {liveChord?.evidence.chord ?? '--'} · CONF: {Math.round(liveConfidence * 100)}% · {liveTier}
+                    HARMONIC EVIDENCE HUD · {displayedLabel}: {displayedChord} · CONF: {Math.round(displayedConfidence * 100)}% · {displayedTier}
                   </div>
                   <div
                     data-testid="resonance-waveform-status"
@@ -362,15 +372,121 @@ const AppThree: React.FC<AppThreeProps> = ({
                 </div>
              </div>
 
-             {/* Rhythm / Timeline Panel */}
-             <div className="terminal-box glass-shine p-6 space-y-4">
+             {/* Canonical pitch-class mapping and time-aligned waveform */}
+             <div data-testid="harmonic-mapping-panel" className="terminal-box glass-shine p-6 space-y-5">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neonViolet/20 pb-2">
                    <h3 className="text-[10px] font-bold hacker-text-dim uppercase tracking-[0.3em] flex items-center gap-2">
-                      <Activity className="w-3 h-3 text-neonViolet" /> RHYTHM_TIMELINE_WAVEFORM
+                      <Activity className="w-3 h-3 text-neonViolet" /> HARMONIC_EVIDENCE_MAPPING
                    </h3>
-                   <span className="text-[9px] font-bold tracking-widest text-cyan-300">CHORD_TIMELINE</span>
+                   <span className="text-[9px] font-bold tracking-widest text-cyan-300">CIRCLE_OF_FIFTHS · PITCH_CLASS</span>
                 </div>
-                <div id="waveform" className="w-full h-[120px] filter hue-rotate-[280deg] relative">
+
+                <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-5 items-center">
+                  <div className="rounded-lg border border-slate-800/80 bg-black/35 flex items-center justify-center min-h-[238px]">
+                    <svg viewBox="0 0 220 210" className="w-full max-w-[250px] h-auto" role="img" aria-label="Pitch-class Circle of Fifths harmonic evidence">
+                      <circle cx="110" cy="105" r="77" fill="none" stroke="rgba(75,93,120,0.52)" strokeWidth="1" />
+                      {harmonicEdges.map(([fromPitch, toPitch]) => {
+                        const from = harmonicNodeFor(fromPitch);
+                        const to = harmonicNodeFor(toPitch);
+                        if (!from || !to || displayedRootIndex === null) return null;
+                        return (
+                          <path
+                            key={`${fromPitch}-${toPitch}`}
+                            d={`M ${from.x} ${from.y} Q 110 105 ${to.x} ${to.y}`}
+                            fill="none"
+                            stroke={PITCH_CLASS_COLORS[displayedRootIndex]}
+                            strokeWidth={displayedTier === 'LOW' ? 1 : 1.5}
+                            opacity={displayedTier === 'LOW' ? 0.46 : 0.78}
+                          />
+                        );
+                      })}
+                      {harmonicNodes.map(node => {
+                        const isRoot = node.pitchClass === displayedTriad?.rootIndex;
+                        const isThird = node.pitchClass === displayedTriad?.thirdIndex;
+                        const isFifth = node.pitchClass === displayedTriad?.fifthIndex;
+                        const role = isRoot ? 'R' : isThird ? '3' : isFifth ? '5' : null;
+                        const intensity = Math.min(1, Math.max(0, node.energy));
+                        const nodeOpacity = role ? Math.max(0.82, 0.34 + intensity * 0.66) : 0.28 + intensity * 0.7;
+                        const nodeRadius = 5 + intensity * 5 + (role ? 1.5 : 0);
+                        const color = PITCH_CLASS_COLORS[node.pitchClass];
+                        return (
+                          <g key={node.pitchClass}>
+                            <circle
+                              cx={node.x}
+                              cy={node.y}
+                              r={nodeRadius}
+                              fill={color}
+                              fillOpacity={nodeOpacity}
+                              stroke={role ? '#f8fafc' : color}
+                              strokeOpacity={role ? 0.8 : 0.24}
+                              strokeWidth={role ? 1.2 : 0.6}
+                              style={{ filter: intensity > 0.35 || role ? `drop-shadow(0 0 ${4 + intensity * 7}px ${color})` : undefined }}
+                            />
+                            <text x={node.x} y={node.y + 17} textAnchor="middle" fill="rgba(203,213,225,0.82)" fontSize="7" fontWeight="700">
+                              {NOTE_NAMES[node.pitchClass]}
+                            </text>
+                            {role && (
+                              <text x={node.x} y={node.y + 2.5} textAnchor="middle" fill="#020409" fontSize="6" fontWeight="900">
+                                {role}
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
+                      <text x="110" y="98" textAnchor="middle" fill="#f8fafc" fontSize="19" fontWeight="900">
+                        {displayedChord}
+                      </text>
+                      <text x="110" y="113" textAnchor="middle" fill={displayedRootIndex === null ? '#64748b' : PITCH_CLASS_COLORS[displayedRootIndex]} fontSize="7" fontWeight="800">
+                        {displayedQuality?.toUpperCase() ?? 'LISTENING'}
+                      </text>
+                      <text x="110" y="126" textAnchor="middle" fill="rgba(148,163,184,0.7)" fontSize="6">
+                        CONF {Math.round(displayedConfidence * 100)}% · {displayedTier}
+                      </text>
+                    </svg>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-2 text-[9px] uppercase tracking-widest">
+                      <div className="rounded border border-slate-800 bg-black/35 p-3">
+                        <div className="text-slate-500">PITCH_CLASS</div>
+                        <div className="mt-1 text-base font-black text-slate-100">{displayedRoot ?? '--'}</div>
+                      </div>
+                      <div className="rounded border border-slate-800 bg-black/35 p-3">
+                        <div className="text-slate-500">CHORD_CANDIDATE</div>
+                        <div className="mt-1 text-base font-black text-slate-100">{displayedChord}</div>
+                      </div>
+                      <div className="rounded border border-slate-800 bg-black/35 p-3">
+                        <div className="text-slate-500">QUALITY</div>
+                        <div className="mt-1 font-bold text-cyan-300">{displayedQuality ?? '--'}</div>
+                      </div>
+                      <div className="rounded border border-slate-800 bg-black/35 p-3">
+                        <div className="text-slate-500">HARMONIC_EVIDENCE</div>
+                        <div className={`mt-1 font-bold ${liveTierClass.split(' ').at(-1)}`}>{Math.round(displayedConfidence * 100)}% · {displayedTier}</div>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="mb-2 text-[8px] text-slate-500 uppercase tracking-[0.25em]">CANONICAL_FIFTHS_ORDER</div>
+                      <div className="grid grid-cols-6 gap-1">
+                        {CIRCLE_OF_FIFTHS_PITCH_CLASSES.map(pitchClass => (
+                          <div
+                            key={pitchClass}
+                            className="rounded border border-slate-800/80 bg-black/30 px-1.5 py-2 text-center"
+                            style={{ color: PITCH_CLASS_COLORS[pitchClass] }}
+                          >
+                            <div className="text-[9px] font-black">{NOTE_NAMES[pitchClass]}</div>
+                            <div className="text-[6px] opacity-55">PC {pitchClass}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-neonViolet/15 pt-3 text-[8px] font-bold tracking-[0.22em]">
+                  <span className="text-slate-500">TIME_ALIGNED_ACOUSTIC_WAVEFORM</span>
+                  <span className="text-cyan-300">CHORD_TIMELINE</span>
+                </div>
+                <div id="waveform" className="w-full h-[120px] relative">
                    {/* Dedicated WaveSurfer DOM Target (separate from React children) */}
                    <div ref={containerRef} className="w-full h-full" />
                    
@@ -429,9 +545,8 @@ const AppThree: React.FC<AppThreeProps> = ({
                   <div className="grid gap-2">
                     {chordSegments.map((segment, index) => {
                       const isActive = index === activeChordIndex;
-                      const mappedKey = segment.mappedKeyId
-                        ? EMOTIONAL_KEYS.find(key => key.id === segment.mappedKeyId) ?? selectedKey
-                        : selectedKey;
+                      const pitchClass = pitchClassIndexForNote(segment.root);
+                      const pitchColor = pitchClass === null ? '#5c708e' : PITCH_CLASS_COLORS[pitchClass];
                       return (
                         <button
                           key={`${segment.startTime}-${segment.chord}`}
@@ -444,9 +559,9 @@ const AppThree: React.FC<AppThreeProps> = ({
                           }}
                           className={`terminal-box glass-shine p-3 text-left transition-all relative overflow-hidden group ${isActive ? 'shadow-[0_0_20px_rgba(0,255,65,0.3)] border-hackerGreen' : 'border-neonViolet/30 hover:border-neonViolet'}`}
                         >
-                          <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: mappedKey.primaryColor }} />
+                          <span className="absolute left-0 top-0 bottom-0 w-1" style={{ backgroundColor: pitchColor }} />
                           <span className="flex justify-between items-center gap-4 pl-2">
-                            <span className="text-lg font-black text-cyan-300 tracking-widest">{segment.chord}</span>
+                            <span className="text-lg font-black tracking-widest" style={{ color: pitchColor }}>{segment.chord}</span>
                             <span className="text-[9px] hacker-text-dim tracking-widest">
                               {formatTime(segment.startTime)} &gt;&gt; {formatTime(segment.endTime)} · CONF {Math.round(segment.confidence * 100)}%
                             </span>

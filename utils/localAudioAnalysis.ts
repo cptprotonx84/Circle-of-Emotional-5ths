@@ -1,7 +1,4 @@
 import Meyda from 'meyda';
-import { EMOTIONAL_KEYS } from '../constants';
-import { MusicalKeyId } from '../types';
-import { getNearestKey } from './emotionMath';
 import { estimateChordFromChroma, ChordQuality } from './chordAnalysis';
 
 export { estimateChordFromChroma } from './chordAnalysis';
@@ -24,18 +21,6 @@ export interface ChordTimelineSegment {
   root: string;
   quality: ChordQuality;
   confidence: number;
-  mappedKeyId: MusicalKeyId | null;
-}
-
-export interface EmotionTimelineSegment {
-  startTime: number;
-  endTime: number;
-  valence: number;
-  arousal: number;
-  mood: string;
-  description: string;
-  confidence: number;
-  mappedKeyId: MusicalKeyId | null;
 }
 
 export interface LocalAudioAnalysis {
@@ -48,12 +33,10 @@ export interface LocalAudioAnalysis {
 const BUFFER_SIZE = 4096;
 const ANALYSIS_HOP_SECONDS = 0.5;
 const MIN_CHORD_SECONDS = 1.25;
-const EMOTION_WINDOW_SECONDS = 6;
 export const MAX_LOCAL_AUDIO_BYTES = 256 * 1024 * 1024;
 export const MAX_LOCAL_AUDIO_DURATION_SECONDS = 20 * 60;
 
-const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
-const clamp01 = (value: number) => clamp(value, 0, 1);
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
 
 export const validateLocalAudioFileSize = (size: number) => {
   if (!Number.isFinite(size) || size <= 0) {
@@ -62,12 +45,6 @@ export const validateLocalAudioFileSize = (size: number) => {
   if (size > MAX_LOCAL_AUDIO_BYTES) {
     throw new Error('LOCAL_ANALYSIS_LIMIT: select an audio file no larger than 256MB.');
   }
-};
-
-const mapChordToCircle = (root: string, quality: ChordQuality): MusicalKeyId | null => {
-  const exact = EMOTIONAL_KEYS.find(key => key.root === root && key.quality === quality);
-  const rootProxy = EMOTIONAL_KEYS.find(key => key.root === root);
-  return exact?.id ?? rootProxy?.id ?? null;
 };
 
 const smoothChordFrames = (frames: ChordFrame[]) => frames.map((frame, index) => {
@@ -107,7 +84,6 @@ export const buildChordSegmentsFromFrames = (frames: ChordFrame[], duration: num
         root: activeChord.root,
         quality: activeChord.quality,
         confidence: clamp01(confidenceTotal / confidenceCount),
-        mappedKeyId: mapChordToCircle(activeChord.root, activeChord.quality),
       });
       segmentStart = frame.time;
       activeChord = frame;
@@ -126,7 +102,6 @@ export const buildChordSegmentsFromFrames = (frames: ChordFrame[], duration: num
     root: activeChord.root,
     quality: activeChord.quality,
     confidence: clamp01(confidenceTotal / confidenceCount),
-    mappedKeyId: mapChordToCircle(activeChord.root, activeChord.quality),
   });
 
   return segments.reduce<ChordTimelineSegment[]>((result, segment) => {
@@ -139,56 +114,6 @@ export const buildChordSegmentsFromFrames = (frames: ChordFrame[], duration: num
     result.push({ ...segment });
     return result;
   }, []);
-};
-
-const percentile = (values: number[], ratio: number) => {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * ratio))];
-};
-
-const describeEmotion = (valence: number, arousal: number) => {
-  if (arousal >= 0.36 && valence >= 0.25) return { mood: 'Energized', description: 'Bright, high-energy spectral movement.' };
-  if (arousal >= 0.36 && valence < 0.25) return { mood: 'Tense', description: 'High energy with a darker harmonic profile.' };
-  if (arousal < -0.2 && valence >= 0.25) return { mood: 'Serene', description: 'Restrained energy with a brighter spectral balance.' };
-  if (arousal < -0.2 && valence < 0.25) return { mood: 'Reflective', description: 'Low energy with a darker spectral balance.' };
-  return { mood: valence >= 0 ? 'Open' : 'Brooding', description: 'Moderate energy with evolving spectral color.' };
-};
-
-const buildEmotionSegments = (frames: ChordFrame[], duration: number): EmotionTimelineSegment[] => {
-  if (!frames.length || duration <= 0) return [];
-  const rmsReference = Math.max(0.015, percentile(frames.map(frame => frame.rms), 0.9));
-  const segments: EmotionTimelineSegment[] = [];
-
-  for (let startTime = 0; startTime < duration; startTime += EMOTION_WINDOW_SECONDS) {
-    const endTime = Math.min(duration, startTime + EMOTION_WINDOW_SECONDS);
-    const windowFrames = frames.filter(frame => frame.time >= startTime && frame.time < endTime);
-    if (!windowFrames.length) continue;
-
-    const rms = windowFrames.reduce((sum, frame) => sum + frame.rms, 0) / windowFrames.length;
-    const centroid = windowFrames.reduce((sum, frame) => sum + frame.spectralCentroid, 0) / windowFrames.length;
-    const majorRatio = windowFrames.filter(frame => frame.quality === 'Major').length / windowFrames.length;
-    const confidence = windowFrames.reduce((sum, frame) => sum + frame.confidence, 0) / windowFrames.length;
-    const normalizedEnergy = clamp01((rms / rmsReference) * 0.82);
-    const arousal = normalizedEnergy * 2 - 1;
-    const brightness = clamp01(centroid / 160);
-    const valence = clamp(-0.72 + brightness * 1.18 + majorRatio * 0.34, -1, 1);
-    const mappedKey = getNearestKey({ valence, arousal });
-    const emotionDescription = describeEmotion(valence, arousal);
-
-    segments.push({
-      startTime,
-      endTime,
-      valence,
-      arousal,
-      mood: emotionDescription.mood,
-      description: emotionDescription.description,
-      confidence: clamp01(confidence),
-      mappedKeyId: mappedKey?.id ?? null,
-    });
-  }
-
-  return segments;
 };
 
 const dominantChord = (segments: ChordTimelineSegment[]) => {

@@ -10,7 +10,6 @@ const DEFAULT_SELECTED_KEY_ID: MusicalKeyId = 'C_MAJOR';
 
 const App: React.FC = () => {
   const [manualSelectedKeyId, setManualSelectedKeyId] = useState<MusicalKeyId>(DEFAULT_SELECTED_KEY_ID);
-  const [playbackKeyId, setPlaybackKeyId] = useState<MusicalKeyId | null>(null);
   const [lastBeatTimestamp, setLastBeatTimestamp] = useState<number>(0);
   const [hasPaidKey, setHasPaidKey] = useState(false);
 
@@ -36,19 +35,9 @@ const App: React.FC = () => {
       return;
     }
     setManualSelectedKeyId(candidate.id);
-    setPlaybackKeyId(null);
   }, []);
 
-  const handlePlaybackKeyChange = useCallback((candidateId: MusicalKeyId | null) => {
-    if (candidateId === null) {
-      setPlaybackKeyId(null);
-      return;
-    }
-    const candidate = EMOTIONAL_KEYS.find(key => key.id === candidateId);
-    if (candidate) setPlaybackKeyId(candidate.id);
-  }, []);
-
-  const selectedKeyId = playbackKeyId ?? manualSelectedKeyId;
+  const selectedKeyId = manualSelectedKeyId;
 
   const selectedKey = EMOTIONAL_KEYS.find(key => key.id === selectedKeyId);
   if (!selectedKey) {
@@ -165,8 +154,6 @@ const App: React.FC = () => {
             </p>
           </div>
           <AppThree
-            selectedKey={selectedKey}
-            onPlaybackKeyChange={handlePlaybackKeyChange}
             onBeat={handleBeat}
           />
         </section>

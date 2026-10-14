@@ -3,9 +3,18 @@ import {
   advanceChordTracker,
   analyzePitchClassChroma,
   CHORD_HOLD_FRAMES,
+  CIRCLE_OF_FIFTHS_PITCH_CLASSES,
   confidenceTier,
   emptyChordTracker,
+  NOTE_NAMES,
+  pitchClassIndexForNote,
 } from '../utils/realtimeChordAnalysis';
+
+assert.deepEqual(
+  CIRCLE_OF_FIFTHS_PITCH_CLASSES.map(index => NOTE_NAMES[index]),
+  ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#', 'G#', 'D#', 'A#', 'F'],
+);
+NOTE_NAMES.forEach((note, index) => assert.equal(pitchClassIndexForNote(note), index));
 
 const chromaFor = (root: number, minor = false) => {
   const chroma = Array.from({ length: 12 }, () => 0.01);
@@ -20,6 +29,15 @@ const gMajor = analyzePitchClassChroma(chromaFor(7));
 const dMajor = analyzePitchClassChroma(chromaFor(2));
 assert.equal(cMajor.chord, 'C');
 assert.equal(gMajor.chord, 'G');
+
+for (let rootIndex = 0; rootIndex < NOTE_NAMES.length; rootIndex += 1) {
+  const major = analyzePitchClassChroma(chromaFor(rootIndex));
+  const minor = analyzePitchClassChroma(chromaFor(rootIndex, true));
+  assert.equal(major.root, NOTE_NAMES[rootIndex]);
+  assert.equal(major.quality, 'Major');
+  assert.equal(minor.root, NOTE_NAMES[rootIndex]);
+  assert.equal(minor.quality, 'Minor');
+}
 
 let tracker = emptyChordTracker();
 for (let frame = 0; frame < CHORD_HOLD_FRAMES - 1; frame += 1) tracker = advanceChordTracker(tracker, cMajor);

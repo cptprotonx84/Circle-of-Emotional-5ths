@@ -1,0 +1,13 @@
+time_seconds,displayed_chord,conf_percent,tier,event_type,expected_chord,notes
+0.334,F,11,LOW,incorrect_transient,C,"Startup candidate before the initial C promotion"
+1.480,C,13,LOW,promotion,C,"Initial chord acquisition"
+4.171,C,9,LOW,confidence_update,Am,"Active C retained while Am candidate accumulated"
+4.290,C,0,LOW,confidence_update,Am,"Transition evidence minimum"
+5.550,Am,15,LOW,promotion,Am,"14-frame persistence completed"
+8.130,Am,10,LOW,confidence_update,F,"Active Am retained while F candidate accumulated"
+8.249,Am,7,LOW,confidence_update,F,"Transition evidence minimum"
+9.451,F,21,MOD,promotion,F,"14-frame persistence completed"
+11.169,F,20,MOD,confidence_update,F,"Stable F evidence"
+11.598,F,21,MOD,confidence_update,F,"Stable F evidence"
+12.188,F,9,LOW,confidence_update,G,"Active F retained while G candidate accumulated"
+13.497,G,12,LOW,promotion,G,"14-frame persistence completed"

@@ -2,7 +2,22 @@ import { estimateChordFromChroma, ChordQuality, NOTE_NAMES } from './chordAnalys
 
 export { NOTE_NAMES } from './chordAnalysis';
 export const CIRCLE_OF_FIFTHS_PITCH_CLASSES = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5] as const;
+export const PITCH_CLASS_COLORS = [
+  '#ffd21a', '#39477d', '#1a9a63', '#b52a58', '#26a7a0', '#a65b78',
+  '#6555c9', '#138ca0', '#2877c7', '#c43a6b', '#865072', '#7354b7',
+] as const;
 export const CHORD_HOLD_FRAMES = 14;
+
+export const pitchClassIndexForNote = (note: string): number | null => {
+  const index = NOTE_NAMES.indexOf(note as (typeof NOTE_NAMES)[number]);
+  return index >= 0 ? index : null;
+};
+
+export const triadPitchClasses = (rootIndex: number, quality: ChordQuality) => ({
+  rootIndex,
+  thirdIndex: (rootIndex + (quality === 'Major' ? 4 : 3)) % 12,
+  fifthIndex: (rootIndex + 7) % 12,
+});
 
 export interface ChordEvidence {
   chord: string;
@@ -34,14 +49,12 @@ export const analyzePitchClassChroma = (input: ArrayLike<number>): ChordEvidence
   const total = chroma.reduce((sum, value) => sum + value, 0);
   const normalized = total > 0 ? chroma.map(value => value / total) : chroma;
   const candidate = estimateChordFromChroma(normalized);
-  const rootIndex = NOTE_NAMES.indexOf(candidate.root as (typeof NOTE_NAMES)[number]);
-  const thirdIndex = (rootIndex + (candidate.quality === 'Major' ? 4 : 3)) % 12;
+  const rootIndex = pitchClassIndexForNote(candidate.root) ?? 0;
+  const triad = triadPitchClasses(rootIndex, candidate.quality);
   return {
     ...candidate,
     confidence: total > 0 ? candidate.confidence : 0,
-    rootIndex,
-    thirdIndex,
-    fifthIndex: (rootIndex + 7) % 12,
+    ...triad,
     chroma: normalized,
   };
 };

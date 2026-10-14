@@ -8,6 +8,8 @@ import {
   CIRCLE_OF_FIFTHS_PITCH_CLASSES,
   emptyChordTracker,
   NOTE_NAMES,
+  PITCH_CLASS_COLORS,
+  triadPitchClasses,
 } from '../utils/realtimeChordAnalysis';
 
 export interface LiveChordSnapshot {
@@ -21,6 +23,7 @@ interface LiveVisualizerProps {
   mediaElement: HTMLMediaElement | null;
   isPlaying: boolean;
   reservedFooterHeight?: number;
+  timelineChord?: Pick<ChordEvidence, 'chord' | 'root' | 'quality' | 'confidence'> | null;
   onChordEvidence?: (snapshot: LiveChordSnapshot | null) => void;
 }
 
@@ -32,10 +35,6 @@ interface ResonanceAudioGraph {
 
 type ResonanceMediaElement = HTMLMediaElement & { __resonanceAudioGraph?: ResonanceAudioGraph };
 
-const PITCH_COLORS = [
-  '#ffd21a', '#39477d', '#1a9a63', '#b52a58', '#26a7a0', '#a65b78',
-  '#6555c9', '#138ca0', '#2877c7', '#c43a6b', '#865072', '#7354b7',
-] as const;
 const TIER_COLORS: Record<ConfidenceTier, string> = { LOW: '#b98a2f', MOD: '#22d3ee', HIGH: '#22c55e' };
 
 const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
@@ -51,6 +50,7 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
   mediaElement,
   isPlaying,
   reservedFooterHeight = 0,
+  timelineChord,
   onChordEvidence,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -61,6 +61,7 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
   const timeDomainDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const onChordEvidenceRef = useRef(onChordEvidence);
+  const timelineChordRef = useRef(timelineChord);
   const trackerRef = useRef(emptyChordTracker());
   const chromaRef = useRef(Array.from({ length: 12 }, () => 0));
   const evidenceRef = useRef<ChordEvidence | null>(null);
@@ -68,6 +69,7 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
   const visualStateRef = useRef({ energy: 0, low: 0, mid: 0, high: 0 });
 
   useEffect(() => { onChordEvidenceRef.current = onChordEvidence; }, [onChordEvidence]);
+  useEffect(() => { timelineChordRef.current = timelineChord; }, [timelineChord]);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
@@ -223,9 +225,22 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
         const angle = -Math.PI / 2 + circleIndex * Math.PI / 6;
         return { x: centerX + Math.cos(angle) * distance, y: centerY + Math.sin(angle) * distance };
       };
-      const evidence = evidenceRef.current;
+      const timeline = timelineChordRef.current;
+      const timelineRootIndex = timeline
+        ? NOTE_NAMES.indexOf(timeline.root as (typeof NOTE_NAMES)[number])
+        : -1;
+      const timelineEvidence: ChordEvidence | null = timeline && timelineRootIndex >= 0
+        ? {
+            ...timeline,
+            rootIndex: timelineRootIndex,
+            ...triadPitchClasses(timelineRootIndex, timeline.quality),
+            chroma: [...chromaRef.current],
+          }
+        : null;
+      const evidence = timelineEvidence ?? evidenceRef.current;
       const tier = confidenceTier(evidence?.confidence ?? 0);
       const tierColor = TIER_COLORS[tier];
+      const chordColor = evidence ? PITCH_CLASS_COLORS[evidence.rootIndex] : tierColor;
 
       if (evidence) {
         const root = nodePoint(evidence.rootIndex);
@@ -234,7 +249,9 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
         context.save();
         context.beginPath();
         context.moveTo(root.x, root.y);
-        const curveAmount = 0.38;
+        // Match the main Circle of Fifths: each harmonic edge bows through the
+        // visualizer center instead of reading as a shallow triangle segment.
+        const curveAmount = 1;
         const curveTo = (from: { x: number; y: number }, to: { x: number; y: number }) => {
           const midpointX = (from.x + to.x) / 2;
           const midpointY = (from.y + to.y) / 2;
@@ -245,8 +262,8 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
         curveTo(root, third);
         curveTo(third, fifth);
         curveTo(fifth, root);
-        context.strokeStyle = hexToRgba(tierColor, tier === 'LOW' ? 0.46 : 0.78);
-        context.fillStyle = hexToRgba(tierColor, tier === 'LOW' ? 0.035 : 0.075);
+        context.strokeStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.46 : 0.78);
+        context.fillStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.035 : 0.075);
         context.lineWidth = tier === 'LOW' ? 1 : 1.6;
         context.fill();
         context.stroke();
@@ -260,10 +277,10 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
         context.save();
         context.beginPath();
         context.arc(point.x, point.y, 3.5 + chromaEnergy * 8 + (isTriad ? 1.5 : 0), 0, Math.PI * 2);
-        context.fillStyle = PITCH_COLORS[pitchClass];
+        context.fillStyle = PITCH_CLASS_COLORS[pitchClass];
         context.globalAlpha = 0.22 + chromaEnergy * 0.78;
         context.shadowBlur = chromaEnergy * 18;
-        context.shadowColor = PITCH_COLORS[pitchClass];
+        context.shadowColor = PITCH_CLASS_COLORS[pitchClass];
         context.fill();
         context.restore();
         context.fillStyle = isTriad ? '#f8fafc' : 'rgba(203, 213, 225, 0.55)';
@@ -323,16 +340,16 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
       context.strokeStyle = 'rgba(108, 126, 154, 0.18)';
       context.stroke();
       context.save();
-      context.strokeStyle = hexToRgba(tierColor, tier === 'LOW' ? 0.16 : 0.24);
+      context.strokeStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.16 : 0.24);
       context.lineWidth = 12 + state.energy * 8;
       context.shadowBlur = tier === 'LOW' ? 10 : 24 + state.energy * 20;
-      context.shadowColor = tierColor;
+      context.shadowColor = chordColor;
       context.stroke(waveform);
       context.restore();
-      context.strokeStyle = tier === 'LOW' ? hexToRgba(tierColor, 0.72) : tierColor;
+      context.strokeStyle = tier === 'LOW' ? hexToRgba(chordColor, 0.72) : chordColor;
       context.lineWidth = 2.5;
       context.stroke(waveform);
-      context.strokeStyle = '#f8fafc';
+      context.strokeStyle = hexToRgba(chordColor, 0.96);
       context.lineWidth = 1;
       context.stroke(waveform);
 
@@ -341,7 +358,7 @@ const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
       for (let x = 0; x < width; x += 7) {
         const blend = x / Math.max(1, width);
         const heightValue = (state.low * (1 - blend) + state.mid * 0.6 + state.high * blend) * plumeHeight;
-        context.fillStyle = hexToRgba(tierColor, tier === 'LOW' ? 0.12 : 0.2);
+        context.fillStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.12 : 0.2);
         context.fillRect(x, plumeBottom - heightValue, 4, heightValue);
       }
 
