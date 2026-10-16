@@ -1,290 +1,310 @@
-
 import React, { useEffect, useRef } from 'react';
 import { EMOTIONAL_KEYS } from '../constants';
+import { EmotionalKeyData, EmotionState, MusicalKeyId } from '../types';
 import { getNearestKey } from '../utils/emotionMath';
-import { EmotionState, EmotionalKeyData } from '../types';
 
 interface SoundReactiveMatrixProps {
   mediaElement: HTMLMediaElement | null;
   isPlaying: boolean;
-  targetEmotion: EmotionState | null;
+  selectedKey: EmotionalKeyData;
+  primaryEmotion: EmotionState;
+  secondaryEmotion: EmotionState;
   beatTrigger?: number;
 }
 
 const FFT_SIZE = 1024;
-const SMOOTHING = 0.85;
-const HISTORY_SIZE = 50;
-const ORBIT_RADIUS = 150;
-const ATTRACTOR_STRENGTH = 0.08;
+const HISTORY_SIZE = 46;
+const angleForKey = (key: EmotionalKeyData) => -Math.PI / 2 + (key.keyPosition - 1) * (Math.PI / 6);
+const normalizeArousal = (value: number) => Math.min(1, Math.max(0, (value + 1) / 2));
 
-const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({ mediaElement, isPlaying, targetEmotion, beatTrigger }) => {
+const approachAngle = (current: number, target: number, strength: number) => {
+  let difference = target - current;
+  while (difference < -Math.PI) difference += Math.PI * 2;
+  while (difference > Math.PI) difference -= Math.PI * 2;
+  return current + difference * strength;
+};
+
+const SoundReactiveMatrix: React.FC<SoundReactiveMatrixProps> = ({
+  mediaElement,
+  isPlaying,
+  selectedKey,
+  primaryEmotion,
+  secondaryEmotion,
+  beatTrigger,
+}) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
-
-  // Advanced Physics State
+  const selectedKeyRef = useRef(selectedKey);
+  const primaryRef = useRef(primaryEmotion);
+  const secondaryRef = useRef(secondaryEmotion);
+  const isPlayingRef = useRef(isPlaying);
   const state = useRef({
-    angle: -Math.PI / 2,
-    targetAngle: -Math.PI / 2,
-    radius: 0.5,
-    trail: [] as { x: number; y: number; hue: string }[],
+    angle1: angleForKey(selectedKey),
+    angle2: angleForKey(getNearestKey(secondaryEmotion) ?? selectedKey),
+    radius1: 0.55,
+    radius2: 0.55,
+    trail1: [] as Array<{ x: number; y: number; color: string }>,
+    trail2: [] as Array<{ x: number; y: number; color: string }>,
     beatImpulse: 0,
     bass: 0,
     mid: 0,
     high: 0,
-    tension: 0,
     flux: 0,
-    previousSpectrum: new Float32Array(FFT_SIZE / 2),
-    pulses: [] as { id: number; time: number; color: string }[],
-    lastTargetId: -1,
+    tension: 0,
+    pulses: [] as Array<{ id: MusicalKeyId; life: number; color: string }>,
+    lastPrimaryId: null as MusicalKeyId | null,
   });
 
   useEffect(() => {
-    if (beatTrigger) state.current.beatImpulse = 1.0;
+    selectedKeyRef.current = selectedKey;
+    primaryRef.current = primaryEmotion;
+    secondaryRef.current = secondaryEmotion;
+  }, [primaryEmotion, secondaryEmotion, selectedKey]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+    if (isPlaying && audioContextRef.current?.state === 'suspended') void audioContextRef.current.resume();
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (beatTrigger) state.current.beatImpulse = 1;
   }, [beatTrigger]);
 
   useEffect(() => {
     if (!mediaElement) return;
-    const initAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const ctx = audioContextRef.current;
-      if (!analyserRef.current) {
-        analyserRef.current = ctx.createAnalyser();
-        analyserRef.current.fftSize = FFT_SIZE;
-        analyserRef.current.smoothingTimeConstant = SMOOTHING;
-      }
+    try {
+      const context = audioContextRef.current ?? new (window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      audioContextRef.current = context;
+      const analyser = analyserRef.current ?? context.createAnalyser();
+      analyser.fftSize = FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.85;
+      analyserRef.current = analyser;
       if (!sourceRef.current) {
-        try {
-          // Prevent DOMException by reusing previous source node if already created on this mediaElement
-          const cacheKey = '_audioSource';
-          if ((mediaElement as any)[cacheKey]) {
-            sourceRef.current = (mediaElement as any)[cacheKey];
-          } else {
-            sourceRef.current = ctx.createMediaElementSource(mediaElement);
-            (mediaElement as any)[cacheKey] = sourceRef.current;
-          }
-          sourceRef.current.connect(analyserRef.current);
-          analyserRef.current.connect(ctx.destination);
-        } catch (e) {}
+        sourceRef.current = context.createMediaElementSource(mediaElement);
+        sourceRef.current.connect(analyser);
+        analyser.connect(context.destination);
       }
-    };
-    initAudio();
+    } catch (error) {
+      console.warn('MATRIX_AUDIO_GRAPH_UNAVAILABLE', error);
+    }
   }, [mediaElement]);
 
   useEffect(() => {
-    if (!canvasRef.current) return;
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
+    if (!canvas) return;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return;
+    const frequencyData = new Uint8Array(FFT_SIZE / 2);
+
+    const resize = () => {
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const ratio = window.devicePixelRatio || 1;
+      const width = Math.max(1, parent.clientWidth);
+      const height = Math.max(1, parent.clientHeight);
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    };
+
+    const drawTrail = (trail: Array<{ x: number; y: number; color: string }>, x: number, y: number, color: string) => {
+      trail.push({ x, y, color });
+      if (trail.length > HISTORY_SIZE) trail.shift();
+      context.save();
+      context.globalCompositeOperation = 'lighter';
+      for (let index = 1; index < trail.length; index += 1) {
+        const previous = trail[index - 1];
+        const point = trail[index];
+        const alpha = index / trail.length;
+        context.beginPath();
+        context.moveTo(previous.x, previous.y);
+        context.lineTo(point.x, point.y);
+        context.strokeStyle = point.color;
+        context.lineWidth = 1 + alpha * 4 + state.current.beatImpulse * 5;
+        context.globalAlpha = alpha * 0.42;
+        context.stroke();
+      }
+      context.restore();
+    };
+
+    const drawHead = (x: number, y: number, color: string, label: string) => {
+      context.save();
+      context.beginPath();
+      const size = 7 + state.current.beatImpulse * 8;
+      context.arc(x, y, size, 0, Math.PI * 2);
+      context.fillStyle = '#ffffff';
+      context.shadowBlur = 20 + state.current.beatImpulse * 24;
+      context.shadowColor = color;
+      context.fill();
+      context.shadowBlur = 0;
+      context.fillStyle = '#00ff41';
+      context.font = '700 8px ui-monospace, SFMono-Regular, Menlo, monospace';
+      context.textAlign = 'center';
+      context.fillText(label, x, y - size - 6);
+      context.restore();
+    };
 
     const render = () => {
-      const w = canvas.width;
-      const h = canvas.height;
-      const cx = w / 2;
-      const cy = h / 2;
+      const ratio = window.devicePixelRatio || 1;
+      const width = canvas.width / ratio;
+      const height = canvas.height / ratio;
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const orbitRadius = Math.min(width, height) * 0.34;
+      const current = state.current;
 
-      // 1. Audio Processing
-      if (isPlaying && analyserRef.current) {
-        const data = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteFrequencyData(data);
-        
-        let b = 0, m = 0, hi = 0;
-        for (let i = 0; i < 10; i++) b += data[i];
-        for (let i = 10; i < 100; i++) m += data[i];
-        for (let i = 100; i < 300; i++) hi += data[i];
-
-        state.current.bass = b / 10 / 255;
-        state.current.mid = m / 90 / 255;
-        state.current.high = hi / 200 / 255;
-        state.current.flux = (state.current.bass + state.current.mid + state.current.high) / 3;
-        if (state.current.bass > 0.8) state.current.beatImpulse = 1.0;
+      if (isPlayingRef.current && analyserRef.current) {
+        analyserRef.current.getByteFrequencyData(frequencyData);
+        const average = (start: number, end: number) => {
+          let total = 0;
+          for (let index = start; index < end; index += 1) total += frequencyData[index];
+          return total / Math.max(1, end - start) / 255;
+        };
+        current.bass += (average(0, 12) - current.bass) * 0.18;
+        current.mid += (average(12, 110) - current.mid) * 0.18;
+        current.high += (average(110, 300) - current.high) * 0.18;
+      } else {
+        current.bass *= 0.94;
+        current.mid *= 0.94;
+        current.high *= 0.94;
       }
-      
-      state.current.beatImpulse *= 0.93;
-      state.current.tension = state.current.mid * 0.5 + state.current.high * 0.5;
+      current.flux = (current.bass + current.mid + current.high) / 3;
+      current.beatImpulse *= 0.92;
 
-      // 2. Shortest Path Attraction
-      let currentTarget: EmotionalKeyData | null = null;
-      if (targetEmotion) {
-        currentTarget = getNearestKey(targetEmotion);
-        state.current.targetAngle = -Math.PI / 2 + (currentTarget.keyPosition - 1) * (Math.PI / 6);
-        
-        // Detect Note Change for pulses
-        if (currentTarget.id !== state.current.lastTargetId) {
-          state.current.pulses.push({
-            id: currentTarget.id,
-            time: 1.0,
-            color: currentTarget.primaryColor
-          });
-          state.current.lastTargetId = currentTarget.id;
-        }
-      }
+      const primary = primaryRef.current;
+      const secondary = secondaryRef.current;
+      const primaryKey = getNearestKey(primary) ?? selectedKeyRef.current;
+      const secondaryKey = getNearestKey(secondary) ?? selectedKeyRef.current;
+      const vectorDistance = Math.hypot(primary.valence - secondary.valence, primary.arousal - secondary.arousal);
+      current.tension = Math.min(1, vectorDistance / (Math.SQRT2 * 2));
+      current.angle1 = approachAngle(current.angle1, angleForKey(primaryKey), 0.085);
+      current.angle2 = approachAngle(current.angle2, angleForKey(secondaryKey), 0.072);
+      const radiusTarget1 = 0.43 + normalizeArousal(primary.arousal) * 0.34 + current.bass * 0.12;
+      const radiusTarget2 = 0.43 + normalizeArousal(secondary.arousal) * 0.34 + current.mid * 0.12;
+      current.radius1 += (radiusTarget1 - current.radius1) * 0.09;
+      current.radius2 += (radiusTarget2 - current.radius2) * 0.09;
 
-      let diff = state.current.targetAngle - state.current.angle;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-
-      const jitter = (Math.random() - 0.5) * state.current.tension * 0.2;
-      state.current.angle += diff * ATTRACTOR_STRENGTH + jitter;
-
-      const radiusTarget = 0.4 + state.current.bass * 0.4 + state.current.tension * 0.2;
-      state.current.radius += (radiusTarget - state.current.radius) * 0.1;
-
-      // 3. Clear & Background Grid
-      ctx.fillStyle = '#050810';
-      ctx.fillRect(0, 0, w, h);
-
-      // Reactive Background Grid
-      ctx.strokeStyle = '#1e293b';
-      ctx.lineWidth = 1;
-      ctx.globalAlpha = 0.2 + state.current.flux * 0.3;
-      const gridSize = 40;
-      for (let x = 0; x < w; x += gridSize) {
-        ctx.beginPath();
-        for (let y = 0; y < h; y += 10) {
-          const dx = x - (cx + Math.cos(state.current.angle) * ORBIT_RADIUS * state.current.radius);
-          const dy = y - (cy + Math.sin(state.current.angle) * ORBIT_RADIUS * state.current.radius);
-          const dist = Math.sqrt(dx*dx + dy*dy);
-          const push = Math.max(0, (150 - dist) / 150) * 20;
-          ctx.lineTo(x + (dx / dist) * push, y + (dy / dist) * push);
-        }
-        ctx.stroke();
+      if (primaryKey.id !== current.lastPrimaryId) {
+        current.pulses.push({ id: primaryKey.id, life: 1, color: primaryKey.primaryColor });
+        current.lastPrimaryId = primaryKey.id;
       }
 
-      // 4. Harmonic Nodes & Pings
+      const p1x = centerX + Math.cos(current.angle1) * orbitRadius * current.radius1;
+      const p1y = centerY + Math.sin(current.angle1) * orbitRadius * current.radius1;
+      const p2x = centerX + Math.cos(current.angle2) * orbitRadius * current.radius2;
+      const p2y = centerY + Math.sin(current.angle2) * orbitRadius * current.radius2;
+
+      context.fillStyle = '#050810';
+      context.fillRect(0, 0, width, height);
+      context.save();
+      context.strokeStyle = '#1e293b';
+      context.lineWidth = 1;
+      context.globalAlpha = 0.2 + current.flux * 0.25;
+      for (let x = 0; x <= width; x += 40) {
+        context.beginPath(); context.moveTo(x, 0); context.lineTo(x, height); context.stroke();
+      }
+      for (let y = 0; y <= height; y += 40) {
+        context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
+      }
+      context.restore();
+
+      context.beginPath();
+      context.arc(centerX, centerY, orbitRadius, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(75, 93, 120, 0.4)';
+      context.stroke();
+
       EMOTIONAL_KEYS.forEach(key => {
-        const theta = -Math.PI / 2 + (key.keyPosition - 1) * (Math.PI / 6);
-        const kx = cx + Math.cos(theta) * ORBIT_RADIUS;
-        const ky = cy + Math.sin(theta) * ORBIT_RADIUS;
-
-        let aDiff = Math.abs(state.current.angle - theta);
-        while (aDiff > Math.PI) aDiff = Math.abs(aDiff - Math.PI * 2);
-        const prox = Math.max(0, 1 - aDiff / 0.8);
-
-        // Draw Active Node Connection (Bloom Pass)
-        if (prox > 0.5) {
-          const beamProx = (prox - 0.5) / 0.5;
-          const px = cx + Math.cos(state.current.angle) * (ORBIT_RADIUS * state.current.radius);
-          const py = cy + Math.sin(state.current.angle) * (ORBIT_RADIUS * state.current.radius);
-          
-          ctx.save();
-          ctx.globalCompositeOperation = 'lighter';
-          // Bloom Pass 1
-          ctx.beginPath();
-          ctx.moveTo(px, py); ctx.lineTo(kx, ky);
-          ctx.strokeStyle = key.primaryColor;
-          ctx.lineWidth = 15 * beamProx * (1 + state.current.beatImpulse);
-          ctx.globalAlpha = 0.1 * beamProx;
-          ctx.stroke();
-          // Bloom Pass 2
-          ctx.lineWidth = 4 * beamProx;
-          ctx.globalAlpha = 0.4 * beamProx;
-          ctx.stroke();
-          // Core
-          ctx.lineWidth = 1;
-          ctx.globalAlpha = 0.8 * beamProx;
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.stroke();
-          ctx.restore();
-        }
-
-        // Draw Node
-        ctx.beginPath();
-        const baseSize = 4 + prox * 6;
-        ctx.arc(kx, ky, baseSize, 0, Math.PI * 2);
-        ctx.fillStyle = key.primaryColor;
-        ctx.globalAlpha = 0.3 + prox * 0.7;
-        ctx.fill();
-        
-        // Node Label
-        if (prox > 0.3) {
-          ctx.fillStyle = '#fff';
-          ctx.font = `bold ${10 + prox * 2}px Inter`;
-          ctx.textAlign = 'center';
-          ctx.fillText(key.musicalKey.split(' ')[0], kx, ky + 20);
-        }
+        const theta = angleForKey(key);
+        const nodeX = centerX + Math.cos(theta) * orbitRadius;
+        const nodeY = centerY + Math.sin(theta) * orbitRadius;
+        const proximityFor = (angle: number) => {
+          let difference = Math.abs(angle - theta);
+          while (difference > Math.PI) difference = Math.abs(difference - Math.PI * 2);
+          return Math.max(0, 1 - difference / 0.8);
+        };
+        const proximity = Math.max(proximityFor(current.angle1), proximityFor(current.angle2));
+        context.beginPath();
+        context.arc(nodeX, nodeY, 4 + proximity * 7, 0, Math.PI * 2);
+        context.fillStyle = key.primaryColor;
+        context.globalAlpha = 0.3 + proximity * 0.7;
+        context.shadowBlur = proximity > 0.55 ? 18 : 0;
+        context.shadowColor = key.primaryColor;
+        context.fill();
+        context.shadowBlur = 0;
+        context.globalAlpha = 1;
+        context.fillStyle = proximity > 0.45 ? '#ffffff' : 'rgba(255,255,255,0.42)';
+        context.font = `${proximity > 0.45 ? '700 10px' : '600 8px'} ui-monospace, SFMono-Regular, Menlo, monospace`;
+        context.textAlign = 'center';
+        context.fillText(key.root, nodeX, nodeY + 18);
       });
 
-      // 5. Particle Trail
-      const px = cx + Math.cos(state.current.angle) * (ORBIT_RADIUS * state.current.radius);
-      const py = cy + Math.sin(state.current.angle) * (ORBIT_RADIUS * state.current.radius);
-      state.current.trail.push({ x: px, y: py, hue: currentTarget?.primaryColor || '#fff' });
-      if (state.current.trail.length > HISTORY_SIZE) state.current.trail.shift();
+      context.save();
+      context.globalCompositeOperation = 'lighter';
+      const bridgeGradient = context.createLinearGradient(p1x, p1y, p2x, p2y);
+      bridgeGradient.addColorStop(0, primaryKey.primaryColor);
+      bridgeGradient.addColorStop(0.5, '#d000ff');
+      bridgeGradient.addColorStop(1, secondaryKey.primaryColor);
+      const time = performance.now() / 1000;
+      const midpointX = (p1x + p2x) / 2 + Math.sin(time * 4) * 10 * current.tension;
+      const midpointY = (p1y + p2y) / 2 + Math.cos(time * 4) * 10 * current.tension;
+      context.beginPath();
+      context.moveTo(p1x, p1y);
+      context.quadraticCurveTo(midpointX, midpointY, p2x, p2y);
+      context.strokeStyle = bridgeGradient;
+      context.lineWidth = 5 + current.tension * 5 + current.beatImpulse * 5;
+      context.globalAlpha = 0.18 + current.tension * 0.22;
+      context.stroke();
+      context.lineWidth = 1.25;
+      context.globalAlpha = 0.78;
+      context.setLineDash([4, 5]);
+      context.stroke();
+      context.setLineDash([]);
+      context.restore();
 
-      ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      for (let i = 1; i < state.current.trail.length; i++) {
-        const p1 = state.current.trail[i-1];
-        const p2 = state.current.trail[i];
-        const alpha = i / state.current.trail.length;
-        ctx.beginPath();
-        ctx.moveTo(p1.x, p1.y);
-        ctx.lineTo(p2.x, p2.y);
-        ctx.strokeStyle = p2.hue;
-        ctx.lineWidth = 2 + alpha * 5 + state.current.beatImpulse * 10;
-        ctx.globalAlpha = alpha * 0.5;
-        ctx.stroke();
-      }
-      ctx.restore();
+      drawTrail(current.trail1, p1x, p1y, primaryKey.primaryColor);
+      drawTrail(current.trail2, p2x, p2y, secondaryKey.primaryColor);
+      drawHead(p1x, p1y, primaryKey.primaryColor, 'P_01');
+      drawHead(p2x, p2y, secondaryKey.primaryColor, 'P_02');
 
-      // 6. Particle Head
-      ctx.beginPath();
-      const headSize = 8 + state.current.beatImpulse * 15;
-      ctx.arc(px, py, headSize, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 20 + state.current.beatImpulse * 40;
-      ctx.shadowColor = currentTarget?.primaryColor || '#fff';
-      ctx.fill();
-      ctx.shadowBlur = 0;
-
-      // 7. Node Pings (Activation Ripples)
-      state.current.pulses = state.current.pulses.filter(p => p.time > 0);
-      state.current.pulses.forEach(p => {
-        const key = EMOTIONAL_KEYS.find(k => k.id === p.id);
+      current.pulses = current.pulses.filter(pulse => pulse.life > 0);
+      current.pulses.forEach(pulse => {
+        const key = EMOTIONAL_KEYS.find(item => item.id === pulse.id);
         if (!key) return;
-        const theta = -Math.PI / 2 + (key.keyPosition - 1) * (Math.PI / 6);
-        const kx = cx + Math.cos(theta) * ORBIT_RADIUS;
-        const ky = cy + Math.sin(theta) * ORBIT_RADIUS;
-
-        ctx.beginPath();
-        ctx.arc(kx, ky, (1 - p.time) * 100, 0, Math.PI * 2);
-        ctx.strokeStyle = p.color;
-        ctx.lineWidth = p.time * 4;
-        ctx.globalAlpha = p.time * 0.5;
-        ctx.stroke();
-        p.time -= 0.02;
+        const theta = angleForKey(key);
+        context.beginPath();
+        context.arc(centerX + Math.cos(theta) * orbitRadius, centerY + Math.sin(theta) * orbitRadius, (1 - pulse.life) * 70, 0, Math.PI * 2);
+        context.strokeStyle = pulse.color;
+        context.lineWidth = pulse.life * 3;
+        context.globalAlpha = pulse.life * 0.55;
+        context.stroke();
+        context.globalAlpha = 1;
+        pulse.life -= 0.025;
       });
 
       animationRef.current = requestAnimationFrame(render);
     };
 
-    const handleResize = () => {
-      const parent = canvas.parentElement;
-      if (parent) {
-        canvas.width = parent.clientWidth;
-        canvas.height = parent.clientHeight;
-      }
-    };
-    handleResize();
-    window.addEventListener('resize', handleResize);
+    resize();
+    window.addEventListener('resize', resize);
     render();
-
     return () => {
-      window.removeEventListener('resize', handleResize);
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      window.removeEventListener('resize', resize);
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
     };
-  }, [isPlaying, targetEmotion]);
+  }, []);
 
+  const primaryKey = getNearestKey(primaryEmotion) ?? selectedKey;
+  const secondaryKey = getNearestKey(secondaryEmotion) ?? selectedKey;
   return (
-    <div className="relative w-full h-full rounded-2xl overflow-hidden bg-slate-950 border border-white/5 shadow-2xl">
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />
-      <div className="absolute bottom-4 right-4 flex flex-col items-end gap-1 opacity-40 pointer-events-none">
-        <span className="text-[9px] font-mono text-cyan-400">FLUX_STRENGTH: {(state.current.flux * 100).toFixed(1)}%</span>
-        <span className="text-[9px] font-mono text-rose-400">VECTOR_MASS: {(state.current.radius * 10).toFixed(1)}u</span>
+    <div className="relative h-full w-full overflow-hidden rounded-xl border border-neonViolet/20 bg-slate-950 shadow-2xl">
+      <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
+      <div data-testid="resonance-orbital-key" className="pointer-events-none absolute bottom-3 left-3 text-[9px] font-mono tracking-widest" style={{ color: primaryKey.primaryColor }}>
+        P_01: {primaryKey.displayName.toUpperCase()} · P_02: {secondaryKey.displayName.toUpperCase()}
       </div>
     </div>
   );

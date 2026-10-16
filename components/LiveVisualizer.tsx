@@ -1,276 +1,388 @@
 import React, { useEffect, useRef } from 'react';
-import { EMOTIONAL_KEYS } from '../constants';
+import {
+  advanceChordTracker,
+  analyzePitchClassChroma,
+  ChordEvidence,
+  confidenceTier,
+  ConfidenceTier,
+  CIRCLE_OF_FIFTHS_PITCH_CLASSES,
+  emptyChordTracker,
+  NOTE_NAMES,
+  PITCH_CLASS_COLORS,
+  triadPitchClasses,
+} from '../utils/realtimeChordAnalysis';
+
+export interface LiveChordSnapshot {
+  evidence: ChordEvidence;
+  tier: ConfidenceTier;
+  pendingChord: string | null;
+  pendingFrames: number;
+}
 
 interface LiveVisualizerProps {
   mediaElement: HTMLMediaElement | null;
   isPlaying: boolean;
-  valence: number;
-  arousal: number;
-  reservedFooterHeight?: number; 
+  reservedFooterHeight?: number;
+  timelineChord?: Pick<ChordEvidence, 'chord' | 'root' | 'quality' | 'confidence'> | null;
+  onChordEvidence?: (snapshot: LiveChordSnapshot | null) => void;
 }
 
-const RHYTHM_H = 90;
-const FOOTER_PAD = 14;
+interface ResonanceAudioGraph {
+  context: AudioContext;
+  analyser: AnalyserNode;
+  source: MediaElementAudioSourceNode;
+}
 
-const LiveVisualizer: React.FC<LiveVisualizerProps> = ({ 
-  mediaElement, 
-  isPlaying, 
-  valence, 
-  arousal,
-  reservedFooterHeight = 90 
+type ResonanceMediaElement = HTMLMediaElement & { __resonanceAudioGraph?: ResonanceAudioGraph };
+
+const TIER_COLORS: Record<ConfidenceTier, string> = { LOW: '#b98a2f', MOD: '#22d3ee', HIGH: '#22c55e' };
+
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+const hexToRgba = (hex: string, alpha: number) => {
+  const normalized = hex.replace('#', '');
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+};
+
+const LiveVisualizer: React.FC<LiveVisualizerProps> = ({
+  mediaElement,
+  isPlaying,
+  reservedFooterHeight = 0,
+  timelineChord,
+  onChordEvidence,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const frequencyDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const timeDomainDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const isPlayingRef = useRef(isPlaying);
+  const onChordEvidenceRef = useRef(onChordEvidence);
+  const timelineChordRef = useRef(timelineChord);
+  const trackerRef = useRef(emptyChordTracker());
+  const chromaRef = useRef(Array.from({ length: 12 }, () => 0));
+  const evidenceRef = useRef<ChordEvidence | null>(null);
+  const lastAnalysisAtRef = useRef(0);
+  const visualStateRef = useRef({ energy: 0, low: 0, mid: 0, high: 0 });
 
-  // Persistence for smoothed audio envelopes
-  const envelopes = useRef({
-    low: 0,
-    mid: 0,
-    high: 0,
-    overall: 0,
-    guitar: 0
-  });
-
-  // Audio setup
-  useEffect(() => {
-    if (!mediaElement) return;
-    const initAudio = () => {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const ctx = audioContextRef.current;
-      if (!analyserRef.current) {
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 1024;
-        analyser.smoothingTimeConstant = 0.8;
-        analyserRef.current = analyser;
-      }
-      if (!sourceRef.current) {
-        try {
-          // Prevent DOMException by reusing previous source node if already created on this mediaElement
-          const cacheKey = '_audioSource';
-          if ((mediaElement as any)[cacheKey]) {
-            sourceRef.current = (mediaElement as any)[cacheKey];
-          } else {
-            sourceRef.current = ctx.createMediaElementSource(mediaElement);
-            (mediaElement as any)[cacheKey] = sourceRef.current;
-          }
-          sourceRef.current.connect(analyserRef.current!);
-          analyserRef.current!.connect(ctx.destination);
-        } catch (err) { console.warn(err); }
-      }
-    };
-    initAudio();
-  }, [mediaElement]);
+  useEffect(() => { onChordEvidenceRef.current = onChordEvidence; }, [onChordEvidence]);
+  useEffect(() => { timelineChordRef.current = timelineChord; }, [timelineChord]);
 
   useEffect(() => {
-    const ctx = audioContextRef.current;
-    if (ctx && isPlaying && ctx.state === 'suspended') ctx.resume();
+    isPlayingRef.current = isPlaying;
+    if (isPlaying && audioContextRef.current?.state === 'suspended') void audioContextRef.current.resume();
   }, [isPlaying]);
 
   useEffect(() => {
-    if (!canvasRef.current || !analyserRef.current) return;
+    trackerRef.current = emptyChordTracker();
+    evidenceRef.current = null;
+    chromaRef.current.fill(0);
+    onChordEvidenceRef.current?.(null);
+    if (!mediaElement) {
+      analyserRef.current = null;
+      audioContextRef.current = null;
+      frequencyDataRef.current = null;
+      timeDomainDataRef.current = null;
+      return;
+    }
+
+    try {
+      const resonanceElement = mediaElement as ResonanceMediaElement;
+      let graph = resonanceElement.__resonanceAudioGraph;
+      if (!graph) {
+        const context = new (window.AudioContext || (window as typeof window & { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        const analyser = context.createAnalyser();
+        const source = context.createMediaElementSource(mediaElement);
+        source.connect(analyser);
+        analyser.connect(context.destination);
+        graph = { context, analyser, source };
+        resonanceElement.__resonanceAudioGraph = graph;
+      }
+      graph.analyser.fftSize = 8192;
+      graph.analyser.smoothingTimeConstant = 0.72;
+      audioContextRef.current = graph.context;
+      analyserRef.current = graph.analyser;
+      frequencyDataRef.current = new Uint8Array(graph.analyser.frequencyBinCount);
+      timeDomainDataRef.current = new Uint8Array(graph.analyser.fftSize);
+      if (isPlayingRef.current && graph.context.state === 'suspended') void graph.context.resume();
+    } catch (error) {
+      console.warn('HARMONIC_ANALYSER_UNAVAILABLE', error);
+      analyserRef.current = null;
+      audioContextRef.current = null;
+      frequencyDataRef.current = null;
+      timeDomainDataRef.current = null;
+    }
+  }, [mediaElement]);
+
+  useEffect(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) return;
+    if (!canvas) return;
+    const context = canvas.getContext('2d', { alpha: false });
+    if (!context) return;
 
     const resize = () => {
       const parent = canvas.parentElement;
-      if (parent) {
-        canvas.width = parent.offsetWidth * window.devicePixelRatio;
-        canvas.height = parent.offsetHeight * window.devicePixelRatio;
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-      }
+      if (!parent) return;
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = Math.max(1, parent.clientWidth);
+      const height = Math.max(1, parent.clientHeight);
+      canvas.width = Math.round(width * pixelRatio);
+      canvas.height = Math.round(height * pixelRatio);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     };
-    resize();
-    window.addEventListener('resize', resize);
 
-    const analyser = analyserRef.current;
-    const bufferLength = analyser.frequencyBinCount;
-    const freqData = new Uint8Array(bufferLength);
-    const timeData = new Uint8Array(bufferLength);
+    const render = (now: number) => {
+      const pixelRatio = window.devicePixelRatio || 1;
+      const width = canvas.width / pixelRatio;
+      const height = canvas.height / pixelRatio;
+      const usableHeight = Math.max(260, height - reservedFooterHeight);
+      const analyser = analyserRef.current;
+      const frequencyData = frequencyDataRef.current;
+      const timeDomainData = timeDomainDataRef.current;
+      const audioContext = audioContextRef.current;
+      const hasLiveSignal = Boolean(isPlayingRef.current && analyser && frequencyData && timeDomainData && audioContext);
+      const state = visualStateRef.current;
+      let targetEnergy = 0;
+      let targetLow = 0;
+      let targetMid = 0;
+      let targetHigh = 0;
 
-    const render = () => {
-      analyser.getByteFrequencyData(freqData);
-      analyser.getByteTimeDomainData(timeData);
-
-      const w = canvas.width / window.devicePixelRatio;
-      const h = canvas.height / window.devicePixelRatio;
-      
-      const useFullHeight = reservedFooterHeight === 0;
-      const cx = w / 2;
-      const cy = h / 2;
-      const time = Date.now() / 1000;
-
-      // --- 1. Audio Feature Extraction ---
-      let lowSum = 0, midSum = 0, highSum = 0, totalSum = 0, guitarSum = 0;
-      
-      // Low (Bass): ~20-140Hz (bins 0-3)
-      for (let i = 0; i < 4; i++) lowSum += freqData[i];
-      // Mid (Voice): ~200-3000Hz (bins 4-70)
-      for (let i = 4; i < 70; i++) midSum += freqData[i];
-      // High (Hats/Air): ~3k-10kHz (bins 71-232)
-      for (let i = 71; i < 232; i++) highSum += freqData[i];
-      // Guitar/Texture: ~700Hz - 3500Hz (bins 16-81)
-      for (let i = 16; i < 82; i++) guitarSum += freqData[i];
-      // Total
-      for (let i = 0; i < 232; i++) totalSum += freqData[i];
-
-      const lowTarget = lowSum / 4 / 255;
-      const midTarget = midSum / 66 / 255;
-      const highTarget = highSum / 161 / 255;
-      const guitarTarget = guitarSum / 66 / 255;
-      const overallTarget = totalSum / 232 / 255;
-
-      envelopes.current.low += (lowTarget - envelopes.current.low) * 0.15;
-      envelopes.current.mid += (midTarget - envelopes.current.mid) * 0.15;
-      envelopes.current.high += (highTarget - envelopes.current.high) * 0.15;
-      envelopes.current.guitar += (guitarTarget - envelopes.current.guitar) * 0.12;
-      envelopes.current.overall += (overallTarget - envelopes.current.overall) * 0.1;
-
-      const { low, mid, high, overall, guitar } = envelopes.current;
-      const lowEnergy = low; const midEnergy = mid; const highEnergy = high; const overallEnergy = overall;
-
-      // Clear
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, w, h);
-
-      // --- 2. Color Mapping (Voice/Freq Reactive) ---
-      const energyWeight = mid + high + low + 0.001;
-      let reactiveHue = (180 + midEnergy * 60 + highEnergy * 120 + lowEnergy * -60) % 360;
-
-      // --- 3. Enhanced Oscilloscope Visibility (GOAL A) ---
-      const mainBaseWidth = 3.0 + overall * 3.0;
-      const mainBaseAlpha = 0.55 + overall * 0.4;
-      const reactiveLightness = 35 + overall * 35;
-
-      const scopeWidth = Math.min(w * 0.65, 520);
-      const xStart = cx - scopeWidth / 2;
-      const ampBase = 40 + low * 100 + arousal * 30;
-
-      const drawHighVisScope = (yOffset: number, gain: number, alphaMult: number, hueShift: number, isTexture: boolean) => {
-        const hue = (reactiveHue + hueShift) % 360;
-        const mainAlpha = mainBaseAlpha * alphaMult;
-        const mainWidth = (isTexture ? 2.0 + guitar * 2.0 : mainBaseWidth) * gain;
-
-        const scopeGrad = ctx.createLinearGradient(xStart, 0, xStart + scopeWidth, 0);
-        scopeGrad.addColorStop(0, `hsla(${hue}, 100%, ${reactiveLightness}%, 0)`);
-        scopeGrad.addColorStop(0.5, `hsla(${hue}, 100%, ${reactiveLightness + 10}%, ${mainAlpha})`);
-        scopeGrad.addColorStop(1, `hsla(${hue}, 100%, ${reactiveLightness}%, 0)`);
-
-        let prevS = 0;
-
-        const drawPass = (wFactor: number, aFactor: number, composite: GlobalCompositeOperation) => {
-          ctx.save();
-          ctx.beginPath();
-          ctx.globalAlpha = mainAlpha * aFactor * (0.5 + overallEnergy * 0.5 + midEnergy * 0.3);
-          ctx.strokeStyle = scopeGrad;
-          ctx.lineWidth = mainWidth * (0.5 + overallEnergy * 0.8 + midEnergy * 0.4);
-          ctx.globalCompositeOperation = composite;
-
-          for (let i = 0; i < bufferLength; i++) {
-            const t = i / (bufferLength - 1);
-            let s = (timeData[i] - 128) / 128;
-            
-            // Texture high-pass (GOAL B)
-            if (isTexture) {
-              const highPassS = s - 0.92 * prevS;
-              prevS = s;
-              s = highPassS * 1.5; // Gain for visibility
-            }
-
-            const x = xStart + t * scopeWidth;
-            const y = cy + yOffset + s * ampBase * gain;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-          }
-          ctx.stroke();
-          ctx.restore();
+      if (hasLiveSignal && analyser && frequencyData && timeDomainData && audioContext) {
+        analyser.getByteFrequencyData(frequencyData);
+        analyser.getByteTimeDomainData(timeDomainData);
+        const nyquist = audioContext.sampleRate / 2;
+        const bandEnergy = (minimum: number, maximum: number) => {
+          const start = Math.max(1, Math.floor((minimum / nyquist) * frequencyData.length));
+          const end = Math.max(start + 1, Math.min(frequencyData.length, Math.ceil((maximum / nyquist) * frequencyData.length)));
+          let total = 0;
+          for (let index = start; index < end; index += 1) total += frequencyData[index];
+          return total / (end - start) / 255;
         };
+        targetLow = bandEnergy(45, 250);
+        targetMid = bandEnergy(250, 2400);
+        targetHigh = bandEnergy(2400, 9000);
+        let squareTotal = 0;
+        for (const sample of timeDomainData) squareTotal += Math.pow((sample - 128) / 128, 2);
+        targetEnergy = clamp01(Math.sqrt(squareTotal / timeDomainData.length) * 3.2);
 
-        // Bloom Pass 1: Glow
-        drawPass(2.2, 0.22, 'lighter');
-        // Bloom Pass 2: Halo
-        drawPass(1.5, 0.18, 'lighter');
-        // Bloom Pass 3: Core
-        drawPass(1.0, 1.0, 'source-over');
-      };
-
-      // Draw Texture Layer (Guitar-ish) (GOAL B)
-      if (guitar > 0.05) {
-        drawHighVisScope(-18, 0.7, guitar * 0.8, 40, true);
+        if (now - lastAnalysisAtRef.current >= 90 && targetEnergy > 0.012) {
+          lastAnalysisAtRef.current = now;
+          const measured = Array.from({ length: 12 }, () => 0);
+          for (let index = 1; index < frequencyData.length; index += 1) {
+            const frequency = (index * audioContext.sampleRate) / analyser.fftSize;
+            if (frequency < 55 || frequency > 2200) continue;
+            const midi = Math.round(69 + 12 * Math.log2(frequency / 440));
+            const pitchClass = ((midi % 12) + 12) % 12;
+            const magnitude = Math.pow(frequencyData[index] / 255, 2);
+            measured[pitchClass] += magnitude / Math.sqrt(Math.max(1, frequency / 110));
+          }
+          const maximum = Math.max(...measured, 0.0001);
+          chromaRef.current = measured.map((value, index) => {
+            const normalized = value / maximum;
+            return chromaRef.current[index] * 0.55 + normalized * 0.45;
+          });
+          const candidate = analyzePitchClassChroma(chromaRef.current);
+          trackerRef.current = advanceChordTracker(trackerRef.current, candidate);
+          const displayed = trackerRef.current.active ?? candidate;
+          evidenceRef.current = { ...displayed, chroma: [...chromaRef.current] };
+          onChordEvidenceRef.current?.({
+            evidence: evidenceRef.current,
+            tier: confidenceTier(evidenceRef.current.confidence),
+            pendingChord: trackerRef.current.pendingChord,
+            pendingFrames: trackerRef.current.pendingFrames,
+          });
+        }
       }
 
-      // Draw Main Multi-Layered Oscilloscope (GOAL A)
-      drawHighVisScope(0, 1.0, 1.0, 0, false);
-      drawHighVisScope(0, 0.6, 0.4, -10, false);
+      const response = hasLiveSignal ? 0.2 : 0.07;
+      state.energy += (targetEnergy - state.energy) * response;
+      state.low += (targetLow - state.low) * response;
+      state.mid += (targetMid - state.mid) * response;
+      state.high += (targetHigh - state.high) * response;
 
-      // --- 4. Emotional Nodes ---
-      const orbitRadius = Math.min(w, h) * 0.38;
-      const targetAngle = Math.PI * (valence + 1) - Math.PI / 2;
-      const targetRadius = Math.min(w, h) * 0.25 * (1.1 + arousal);
+      context.fillStyle = '#020409';
+      context.fillRect(0, 0, width, height);
+      context.strokeStyle = 'rgba(92, 112, 142, 0.1)';
+      context.lineWidth = 1;
+      for (let x = 24; x < width; x += 32) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, usableHeight); context.stroke(); }
+      for (let y = 24; y < usableHeight; y += 32) { context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke(); }
 
-      EMOTIONAL_KEYS.forEach((node) => {
-        const theta = -Math.PI / 2 + (node.keyPosition - 1) * (Math.PI / 6);
-        const nx = cx + Math.cos(theta) * orbitRadius;
-        const ny = cy + Math.sin(theta) * orbitRadius;
-        let angDiff = Math.abs(targetAngle - theta);
-        while (angDiff > Math.PI) angDiff = Math.abs(angDiff - Math.PI * 2);
-        const isActive = angDiff < 0.5;
-        const proximity = Math.max(0, 1 - angDiff);
+      const centerX = width / 2;
+      const centerY = usableHeight * 0.32;
+      const radius = Math.min(width * 0.3, usableHeight * 0.22, 132);
+      context.beginPath();
+      context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+      context.strokeStyle = 'rgba(75, 93, 120, 0.42)';
+      context.stroke();
 
-        ctx.beginPath();
-        const size = 4 + proximity * 12 + low * 15;
-        ctx.arc(nx, ny, size, 0, Math.PI * 2);
-        ctx.shadowBlur = isActive ? 20 + low * 40 : 0;
-        ctx.shadowColor = node.primaryColor;
-        ctx.fillStyle = node.primaryColor;
-        ctx.globalAlpha = 0.2 + proximity * 0.8;
-        ctx.fill();
-        ctx.shadowBlur = 0;
+      const nodePoint = (pitchClass: number, distance = radius) => {
+        const circleIndex = CIRCLE_OF_FIFTHS_PITCH_CLASSES.findIndex(value => value === pitchClass);
+        const angle = -Math.PI / 2 + circleIndex * Math.PI / 6;
+        return { x: centerX + Math.cos(angle) * distance, y: centerY + Math.sin(angle) * distance };
+      };
+      const timeline = timelineChordRef.current;
+      const timelineRootIndex = timeline
+        ? NOTE_NAMES.indexOf(timeline.root as (typeof NOTE_NAMES)[number])
+        : -1;
+      const timelineEvidence: ChordEvidence | null = timeline && timelineRootIndex >= 0
+        ? {
+            ...timeline,
+            rootIndex: timelineRootIndex,
+            ...triadPitchClasses(timelineRootIndex, timeline.quality),
+            chroma: [...chromaRef.current],
+          }
+        : null;
+      const evidence = timelineEvidence ?? evidenceRef.current;
+      const tier = confidenceTier(evidence?.confidence ?? 0);
+      const tierColor = TIER_COLORS[tier];
+      const chordColor = evidence ? PITCH_CLASS_COLORS[evidence.rootIndex] : tierColor;
 
-        const displayLetter = node.musicalKey.includes('Minor') ? node.musicalKey[0].toLowerCase() : node.musicalKey[0];
-        ctx.save();
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.font = `bold ${Math.max(6, Math.min(size * 0.8, 11))}px monospace`;
-        ctx.fillStyle = isActive ? '#000' : 'rgba(255, 255, 255, 0.8)';
-        ctx.fillText(displayLetter, nx, ny);
-        ctx.restore();
+      if (evidence) {
+        const root = nodePoint(evidence.rootIndex);
+        const third = nodePoint(evidence.thirdIndex);
+        const fifth = nodePoint(evidence.fifthIndex);
+        context.save();
+        context.beginPath();
+        context.moveTo(root.x, root.y);
+        // Match the main Circle of Fifths: each harmonic edge bows through the
+        // visualizer center instead of reading as a shallow triangle segment.
+        const curveAmount = 1;
+        const curveTo = (from: { x: number; y: number }, to: { x: number; y: number }) => {
+          const midpointX = (from.x + to.x) / 2;
+          const midpointY = (from.y + to.y) / 2;
+          const controlX = midpointX + (centerX - midpointX) * curveAmount;
+          const controlY = midpointY + (centerY - midpointY) * curveAmount;
+          context.quadraticCurveTo(controlX, controlY, to.x, to.y);
+        };
+        curveTo(root, third);
+        curveTo(third, fifth);
+        curveTo(fifth, root);
+        context.strokeStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.46 : 0.78);
+        context.fillStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.035 : 0.075);
+        context.lineWidth = tier === 'LOW' ? 1 : 1.6;
+        context.fill();
+        context.stroke();
+        context.restore();
+      }
+
+      CIRCLE_OF_FIFTHS_PITCH_CLASSES.forEach(pitchClass => {
+        const point = nodePoint(pitchClass);
+        const chromaEnergy = chromaRef.current[pitchClass] ?? 0;
+        const isTriad = Boolean(evidence && [evidence.rootIndex, evidence.thirdIndex, evidence.fifthIndex].includes(pitchClass));
+        context.save();
+        context.beginPath();
+        context.arc(point.x, point.y, 3.5 + chromaEnergy * 8 + (isTriad ? 1.5 : 0), 0, Math.PI * 2);
+        context.fillStyle = PITCH_CLASS_COLORS[pitchClass];
+        context.globalAlpha = 0.22 + chromaEnergy * 0.78;
+        context.shadowBlur = chromaEnergy * 18;
+        context.shadowColor = PITCH_CLASS_COLORS[pitchClass];
+        context.fill();
+        context.restore();
+        context.fillStyle = isTriad ? '#f8fafc' : 'rgba(203, 213, 225, 0.55)';
+        context.font = `${isTriad ? '700 10px' : '600 8px'} ui-monospace, monospace`;
+        context.textAlign = 'center';
+        context.fillText(NOTE_NAMES[pitchClass], point.x, point.y + 17 + chromaEnergy * 4);
       });
 
-      // --- 5. Emotional Vector & Particle ---
-      const px = cx + Math.cos(targetAngle) * targetRadius;
-      const py = cy + Math.sin(targetAngle) * targetRadius;
+      let centroidX = 0;
+      let centroidY = 0;
+      let centroidWeight = 0;
+      CIRCLE_OF_FIFTHS_PITCH_CLASSES.forEach(pitchClass => {
+        const point = nodePoint(pitchClass, 1);
+        const weight = chromaRef.current[pitchClass] ?? 0;
+        centroidX += (point.x - centerX) * weight;
+        centroidY += (point.y - centerY) * weight;
+        centroidWeight += weight;
+      });
+      if (centroidWeight > 0.02) {
+        const scale = radius * 0.62 / centroidWeight;
+        context.beginPath();
+        context.moveTo(centerX, centerY);
+        context.lineTo(centerX + centroidX * scale, centerY + centroidY * scale);
+        context.strokeStyle = 'rgba(248, 250, 252, 0.34)';
+        context.setLineDash([3, 5]);
+        context.stroke();
+        context.setLineDash([]);
+      }
 
-      ctx.beginPath();
-      ctx.moveTo(cx, cy); ctx.lineTo(px, py);
-      ctx.strokeStyle = `hsla(${reactiveHue}, 100%, ${reactiveLightness}%, ${mainBaseAlpha * 0.5})`;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke(); ctx.setLineDash([]);
+      context.textAlign = 'center';
+      context.fillStyle = '#f8fafc';
+      context.font = '800 22px ui-monospace, monospace';
+      context.fillText(evidence?.root ?? '--', centerX, centerY - 4);
+      context.fillStyle = tierColor;
+      context.font = '700 8px ui-monospace, monospace';
+      context.fillText(evidence?.quality.toUpperCase() ?? 'LISTENING', centerX, centerY + 14);
+      context.fillStyle = 'rgba(148, 163, 184, 0.58)';
+      context.fillText('PITCH-CLASS CENTROID', centerX, centerY + 30);
 
-      ctx.beginPath();
-      ctx.arc(px, py, 10 + low * 20, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
-      ctx.shadowBlur = 30 + low * 50;
-      ctx.shadowColor = `hsla(${reactiveHue}, 100%, 50%, 0.85)`;
-      ctx.globalAlpha = 1;
-      ctx.fill(); ctx.shadowBlur = 0;
+      const waveformCenterY = usableHeight * 0.78;
+      const waveformWidth = Math.min(width - 48, 620);
+      const waveformStartX = (width - waveformWidth) / 2;
+      const maximumAmplitude = Math.min(62, usableHeight * 0.125);
+      const waveform = new Path2D();
+      const pointCount = Math.max(120, Math.floor(waveformWidth / 2));
+      for (let index = 0; index <= pointCount; index += 1) {
+        const progress = index / pointCount;
+        const sampleIndex = timeDomainData ? Math.min(timeDomainData.length - 1, Math.floor(progress * timeDomainData.length)) : 0;
+        const sample = hasLiveSignal && timeDomainData ? (timeDomainData[sampleIndex] - 128) / 128 : 0;
+        const x = waveformStartX + progress * waveformWidth;
+        const y = waveformCenterY + sample * maximumAmplitude;
+        if (index === 0) waveform.moveTo(x, y); else waveform.lineTo(x, y);
+      }
+      context.beginPath();
+      context.moveTo(waveformStartX, waveformCenterY);
+      context.lineTo(waveformStartX + waveformWidth, waveformCenterY);
+      context.strokeStyle = 'rgba(108, 126, 154, 0.18)';
+      context.stroke();
+      context.save();
+      context.strokeStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.16 : 0.24);
+      context.lineWidth = 12 + state.energy * 8;
+      context.shadowBlur = tier === 'LOW' ? 10 : 24 + state.energy * 20;
+      context.shadowColor = chordColor;
+      context.stroke(waveform);
+      context.restore();
+      context.strokeStyle = tier === 'LOW' ? hexToRgba(chordColor, 0.72) : chordColor;
+      context.lineWidth = 2.5;
+      context.stroke(waveform);
+      context.strokeStyle = hexToRgba(chordColor, 0.96);
+      context.lineWidth = 1;
+      context.stroke(waveform);
+
+      const plumeBottom = usableHeight - 7;
+      const plumeHeight = Math.min(54, usableHeight * 0.12);
+      for (let x = 0; x < width; x += 7) {
+        const blend = x / Math.max(1, width);
+        const heightValue = (state.low * (1 - blend) + state.mid * 0.6 + state.high * blend) * plumeHeight;
+        context.fillStyle = hexToRgba(chordColor, tier === 'LOW' ? 0.12 : 0.2);
+        context.fillRect(x, plumeBottom - heightValue, 4, heightValue);
+      }
+
+      context.textAlign = 'left';
+      context.fillStyle = 'rgba(148, 163, 184, 0.62)';
+      context.font = '700 8px ui-monospace, monospace';
+      context.fillText('PITCH-CLASS CHROMAGRAM · ACOUSTIC WAVEFORM', waveformStartX, waveformCenterY - maximumAmplitude - 16);
+      context.textAlign = 'right';
+      context.fillStyle = tierColor;
+      context.fillText(`E=${state.energy.toFixed(2)} L=${state.low.toFixed(2)} M=${state.mid.toFixed(2)} H=${state.high.toFixed(2)}`, waveformStartX + waveformWidth, waveformCenterY - maximumAmplitude - 16);
 
       animationRef.current = requestAnimationFrame(render);
     };
 
-    render();
+    resize();
+    window.addEventListener('resize', resize);
+    animationRef.current = requestAnimationFrame(render);
     return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
       window.removeEventListener('resize', resize);
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
     };
-  }, [isPlaying, valence, arousal, reservedFooterHeight]);
+  }, [reservedFooterHeight]);
 
-  return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full rounded-2xl pointer-events-none" />;
+  return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full rounded-2xl pointer-events-none" />;
 };
 
 export default LiveVisualizer;

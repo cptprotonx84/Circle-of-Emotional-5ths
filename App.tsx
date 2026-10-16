@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Music2, Key, ExternalLink } from 'lucide-react';
 import EmoKeyApp from './components/EmoKeyApp';
 import AppTwo from './components/AppTwo';
 import AppThree from './components/AppThree';
-import { EmotionState } from './types';
+import { EMOTIONAL_KEYS } from './constants';
+import { MusicalKeyId } from './types';
+
+const DEFAULT_SELECTED_KEY_ID: MusicalKeyId = 'C_MAJOR';
 
 const App: React.FC = () => {
-  const [sharedEmotion, setSharedEmotion] = useState<EmotionState | null>(null);
+  const [manualSelectedKeyId, setManualSelectedKeyId] = useState<MusicalKeyId>(DEFAULT_SELECTED_KEY_ID);
   const [lastBeatTimestamp, setLastBeatTimestamp] = useState<number>(0);
   const [hasPaidKey, setHasPaidKey] = useState(false);
 
@@ -23,9 +26,23 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleSegmentSelection = (emotion: EmotionState) => {
-    setSharedEmotion(emotion);
-  };
+  const handleSelectedKeyChange = useCallback((candidateId: MusicalKeyId) => {
+    const candidate = EMOTIONAL_KEYS.find(key => key.id === candidateId);
+    if (!candidate) {
+      if (import.meta.env.DEV) {
+        console.warn(`[selected-key] Ignoring unknown key id "${candidateId}"; preserving the last valid selection.`);
+      }
+      return;
+    }
+    setManualSelectedKeyId(candidate.id);
+  }, []);
+
+  const selectedKeyId = manualSelectedKeyId;
+
+  const selectedKey = EMOTIONAL_KEYS.find(key => key.id === selectedKeyId);
+  if (!selectedKey) {
+    throw new Error(`[selected-key] Canonical key id "${selectedKeyId}" is missing from EMOTIONAL_KEYS.`);
+  }
 
   const handleBeat = () => {
     setLastBeatTimestamp(Date.now());
@@ -91,14 +108,12 @@ const App: React.FC = () => {
             </h2>
             <p className="hacker-text-dim mt-1 max-w-2xl text-xs">
               MAPPING PSYCHOLOGICAL STATES TO HARMONIC COORDINATES VIA CIRCLE_OF_FIFTHS.
-              {sharedEmotion && (
-                <span className="ml-2 text-[10px] bg-hackerGreen/10 text-hackerGreen px-2 py-1 rounded border border-hackerGreen/30 animate-pulse">
-                  SYNC_ACTIVE
-                </span>
-              )}
+              <span data-testid="canonical-selected-key" className="ml-2 text-[10px] bg-hackerGreen/10 text-hackerGreen px-2 py-1 rounded border border-hackerGreen/30">
+                SYNC: {selectedKey.id}
+              </span>
             </p>
           </div>
-          <EmoKeyApp externalSelection={sharedEmotion} />
+          <EmoKeyApp selectedKeyId={selectedKeyId} onSelectedKeyChange={handleSelectedKeyChange} />
         </section>
 
         {/* Divider */}
@@ -116,7 +131,11 @@ const App: React.FC = () => {
                VECTOR ANALYSIS OF EMOTIONAL TRANSITIONS WITHIN VALENCE-AROUSAL SPACE.
             </p>
           </div>
-          <AppTwo externalState={sharedEmotion} beatTrigger={lastBeatTimestamp} />
+          <AppTwo
+            selectedKey={selectedKey}
+            onSelectedKeyChange={handleSelectedKeyChange}
+            beatTrigger={lastBeatTimestamp}
+          />
         </section>
 
         {/* Divider */}
@@ -128,13 +147,15 @@ const App: React.FC = () => {
         <section id="audio-analysis" className="relative scroll-mt-24">
           <div className="max-w-7xl mx-auto px-6 pt-10 pb-2">
             <h2 className="text-2xl font-bold flex items-center gap-3 hacker-text">
-               <span className="text-neonViolet">&gt;</span> 03_EMO_TIMELINE
+               <span className="text-neonViolet">&gt;</span> 03_HARMONIC_ANALYZER
             </h2>
              <p className="hacker-text-dim mt-1 max-w-2xl text-xs">
-               REAL-TIME WAVEFORM DECONSTRUCTION AND AROUSAL_MAPPING.
+               REAL-TIME PITCH-CLASS, CHORD-EVIDENCE, AND WAVEFORM ANALYSIS.
             </p>
           </div>
-          <AppThree onSegmentSelect={handleSegmentSelection} onBeat={handleBeat} />
+          <AppThree
+            onBeat={handleBeat}
+          />
         </section>
 
       </div>

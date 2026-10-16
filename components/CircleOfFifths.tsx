@@ -1,232 +1,453 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import * as d3 from 'd3';
 import { motion } from 'motion/react';
-import { EmotionalKeyData } from '../types';
+import { EmotionalKeyData, MusicalKeyId } from '../types';
 
 interface CircleOfFifthsProps {
   data: EmotionalKeyData[];
-  selectedId: number | null;
-  hoveredId: number | null;
+  selectedId: MusicalKeyId | null;
+  hoveredId: MusicalKeyId | null;
   isResonating?: boolean;
-  onSelect: (id: number) => void;
-  onHover: (id: number | null) => void;
+  activeWedgeStyle?: ActiveWedgeStyle;
+  onSelect: (id: MusicalKeyId) => void;
+  onHover: (id: MusicalKeyId | null) => void;
 }
 
-const WaveformOverlay: React.FC<{ arousal: number, color: string, radius: number }> = ({ arousal, color, radius }) => {
-  const [phase, setPhase] = useState(0);
+type ActiveWedgeStyle = 'gradient' | 'wave' | 'aurora';
+
+// Change this single value to compare the three prototype treatments.
+const ACTIVE_WEDGE_STYLE: ActiveWedgeStyle = 'aurora';
+const normalizeArousal = (value: number) => Math.min(1, Math.max(0, (value + 1) / 2));
+
+const polarPoint = (angle: number, pointRadius: number) => ({
+  x: Math.sin(angle) * pointRadius,
+  y: -Math.cos(angle) * pointRadius,
+});
+
+const describeArcLine = (startAngle: number, endAngle: number, lineRadius: number) => {
+  const start = polarPoint(startAngle, lineRadius);
+  const end = polarPoint(endAngle, lineRadius);
+  const largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${lineRadius} ${lineRadius} 0 ${largeArcFlag} 1 ${end.x} ${end.y}`;
+};
+
+const WaveformOverlay: React.FC<{ arousal: number; color: string; radius: number }> = ({ arousal, color, radius }) => {
+  const pathRef = useRef<SVGPathElement>(null);
+  const targetArousalRef = useRef(normalizeArousal(arousal));
+  const currentArousalRef = useRef(targetArousalRef.current);
+
+  useEffect(() => {
+    targetArousalRef.current = normalizeArousal(arousal);
+  }, [arousal]);
 
   useEffect(() => {
     let animationFrameId: number;
+    let phase = 0;
+
     const animate = () => {
-      // Speed scales with arousal
-      const speed = 0.03 + Math.abs(arousal) * 0.05;
-      setPhase(prev => (prev + speed) % (Math.PI * 2));
+      currentArousalRef.current += (targetArousalRef.current - currentArousalRef.current) * 0.04;
+      const normalizedArousal = currentArousalRef.current;
+      phase = (phase + 0.02 + normalizedArousal * 0.045) % (Math.PI * 2);
+      const amplitude = 4 + normalizedArousal * 16;
+      const frequency = 6 + Math.floor(normalizedArousal * 8);
+      const points = Array.from({ length: 150 }, (_, index) => {
+        const angle = (index / 150) * Math.PI * 2;
+        const pointRadius = radius + Math.sin(angle * frequency + phase) * amplitude;
+        return `${pointRadius * Math.cos(angle)},${pointRadius * Math.sin(angle)}`;
+      });
+
+      pathRef.current?.setAttribute('d', `M ${points.join(' L ')} Z`);
       animationFrameId = requestAnimationFrame(animate);
     };
+
     animate();
     return () => cancelAnimationFrame(animationFrameId);
-  }, [arousal]);
-
-  const numPoints = 150;
-  // Amplitude and frequency scale with arousal
-  const amplitude = 4 + Math.abs(arousal) * 12;
-  const frequency = 6 + Math.floor(Math.abs(arousal) * 8);
-
-  const points = Array.from({ length: numPoints }).map((_, i) => {
-    const angle = (i / numPoints) * Math.PI * 2;
-    const r = radius + Math.sin(angle * frequency + phase) * amplitude;
-    return `${r * Math.cos(angle)},${r * Math.sin(angle)}`;
-  });
-
-  const d = `M ${points.join(' L ')} Z`;
+  }, [radius]);
 
   return (
-    <motion.path 
-      d={d} 
-      stroke={color} 
-      fill="none" 
-      strokeWidth={2} 
+    <motion.path
+      ref={pathRef}
+      d=""
+      stroke={color}
+      fill="none"
+      strokeWidth={2}
       initial={{ opacity: 0, scale: 0.8 }}
       animate={{ opacity: 0.7, scale: 1 }}
       exit={{ opacity: 0, scale: 0.8 }}
       transition={{ duration: 0.5 }}
-      style={{ filter: "url(#glow)", pointerEvents: "none" }} 
+      style={{ filter: 'url(#circle-glow)', pointerEvents: 'none' }}
     />
   );
 };
 
-const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({ data, selectedId, hoveredId, isResonating, onSelect, onHover }) => {
-  const width = 400;
-  const height = 400;
-  const radius = Math.min(width, height) / 2 - 40;
-  const center = { x: width / 2, y: height / 2 };
+const CircleOfFifths: React.FC<CircleOfFifthsProps> = ({
+  data,
+  selectedId,
+  hoveredId,
+  isResonating,
+  activeWedgeStyle = ACTIVE_WEDGE_STYLE,
+  onSelect,
+  onHover,
+}) => {
+  const size = 420;
+  const radius = 168;
+  const innerRadius = 98;
+  const centerRadius = 86;
+  const labelRadius = 132;
+  const center = size / 2;
 
-  // D3 Scales and Layout
-  const pie = d3.pie<EmotionalKeyData>()
-    .value(1) // Equal slices
-    .sort((a, b) => a.keyPosition - b.keyPosition) // Ensure C is top then clockwise
-    .startAngle(-Math.PI / 2 + Math.PI / 12) // Rotate so C (index 1) is at top. Each slice is 30deg (PI/6). Center of C slice at -90deg.
-    .endAngle(1.5 * Math.PI + Math.PI / 12);
+  const arcs = useMemo(() => {
+    const pie = d3
+      .pie<EmotionalKeyData>()
+      .value(1)
+      .sort((a, b) => a.keyPosition - b.keyPosition)
+      // D3 measures angle zero at 12 o'clock. Offset by half a wedge so C is centered there.
+      .startAngle(-Math.PI / 12)
+      .endAngle(Math.PI * 2 - Math.PI / 12);
 
-  // Main arc generator for the background of slices
-  const arcGenerator = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
-    .innerRadius(radius * 0.55)
-    .outerRadius(radius);
-  
-  // Specific arc generator for the outer color ring to avoid passing custom radii to the datum
-  const colorRingArc = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
-    .innerRadius(radius * 0.92)
-    .outerRadius(radius);
+    return pie(data);
+  }, [data]);
 
-  const labelArc = d3.arc<d3.PieArcDatum<EmotionalKeyData>>()
-    .innerRadius(radius * 0.75)
-    .outerRadius(radius * 0.75);
+  const wedgeArc = useMemo(
+    () => d3.arc<d3.PieArcDatum<EmotionalKeyData>>().innerRadius(innerRadius).outerRadius(radius),
+    [],
+  );
+  const rimArc = useMemo(
+    () => d3.arc<d3.PieArcDatum<EmotionalKeyData>>().innerRadius(radius - 12).outerRadius(radius),
+    [],
+  );
+  const labelArc = useMemo(
+    () => d3.arc<d3.PieArcDatum<EmotionalKeyData>>().innerRadius(labelRadius).outerRadius(labelRadius),
+    [],
+  );
 
-  const arcs = useMemo(() => pie(data), [data]);
+  const activeId = hoveredId ?? selectedId;
+  const activeData = data.find(item => item.id === activeId) ?? null;
+  const activeIndex = arcs.findIndex(slice => slice.data.id === activeId);
+  const activeKey = activeData?.root ?? '—';
+  const activeMode = activeData?.quality.toUpperCase() ?? '';
+  const activeEmotion = activeData?.emotion.replace('_', ' ') ?? 'SELECT A KEY';
+  const harmonicConnections = useMemo(() => {
+    if (!activeData) return [];
+    const webRadius = centerRadius - 8;
+    const pointForPosition = (position: number) => {
+      const normalizedPosition = ((position - 1 + data.length) % data.length) + 1;
+      return polarPoint((normalizedPosition - 1) * (Math.PI * 2 / data.length), webRadius);
+    };
+    const source = pointForPosition(activeData.keyPosition);
+    const targets = [
+      { position: activeData.keyPosition + 1, label: 'DOMINANT', color: activeData.primaryColor, dashed: false },
+      { position: activeData.keyPosition - 1, label: 'SUBDOMINANT', color: activeData.secondaryColor, dashed: false },
+      { position: activeData.keyPosition + 6, label: 'TRITONE', color: '#d000ff', dashed: true },
+    ];
 
-  const activeId = hoveredId || selectedId;
-  const activeData = activeId ? data.find(d => d.id === activeId) : null;
-
-  // Map gradient name to a solid color for the stroke
-  const getStrokeColor = (gradient: string) => {
-    if (gradient.includes('red')) return '#ef4444';
-    if (gradient.includes('yellow')) return '#facc15';
-    if (gradient.includes('cyan')) return '#22d3ee';
-    if (gradient.includes('green')) return '#22c55e';
-    if (gradient.includes('blue')) return '#3b82f6';
-    if (gradient.includes('teal')) return '#14b8a6';
-    if (gradient.includes('violet')) return '#8b5cf6';
-    if (gradient.includes('indigo')) return '#6366f1';
-    if (gradient.includes('pink')) return '#ec4899';
-    if (gradient.includes('rose') && gradient.includes('crimson')) return '#be123c';
-    if (gradient.includes('rose')) return '#fb7185';
-    if (gradient.includes('dark_blue')) return '#1e3a8a';
-    return '#a855f7'; // default neonViolet
-  };
+    return targets.map(target => {
+      const destination = pointForPosition(target.position);
+      return {
+        ...target,
+        path: `M ${source.x} ${source.y} Q 0 0 ${destination.x} ${destination.y}`,
+      };
+    });
+  }, [activeData, data.length]);
 
   return (
-    <div className="flex justify-center items-center relative select-none">
-      <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="drop-shadow-2xl">
+    <div className="relative flex w-full items-center justify-center select-none" aria-label="Interactive Circle of Fifths">
+      <svg
+        viewBox={`0 0 ${size} ${size}`}
+        className="h-auto w-full max-w-[420px] overflow-visible"
+        role="img"
+        data-active-wedge-style={activeWedgeStyle}
+        aria-label={activeData ? `Circle of Fifths, ${activeData.displayName} selected` : 'Circle of Fifths'}
+      >
         <defs>
-          <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="5" result="blur" />
+          <filter id="circle-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
-        </defs>
-        <g transform={`translate(${center.x},${center.y})`}>
-          {isResonating && activeData && (
-             <WaveformOverlay 
-               arousal={activeData.arousal} 
-               color={getStrokeColor(activeData.colorGradientName)} 
-               radius={radius + 15} 
-             />
-          )}
+          <filter id="active-wedge-edge" x="-35%" y="-35%" width="170%" height="170%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="2.8" result="edgeBlur" />
+            <feMerge>
+              <feMergeNode in="edgeBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter id="active-wedge-bloom" x="-45%" y="-45%" width="190%" height="190%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="7" />
+          </filter>
+          <radialGradient id="circle-center-fill" cx="50%" cy="42%" r="68%">
+            <stop offset="0%" stopColor="#0d1420" />
+            <stop offset="72%" stopColor="#050810" />
+            <stop offset="100%" stopColor="#010205" />
+          </radialGradient>
+          {arcs.map(slice => {
+            const middleAngle = (slice.startAngle + slice.endAngle) / 2;
+            const innerPoint = polarPoint(middleAngle, innerRadius);
+            const outerPoint = polarPoint(middleAngle, radius);
 
-          {/* Central Label */}
-          <circle r={radius * 0.5} className="fill-black stroke-neonViolet stroke-2 drop-shadow-[0_0_10px_rgba(208,0,255,0.5)]" />
-          <text textAnchor="middle" dy="0.3em" className="fill-hackerGreen text-sm font-bold tracking-[0.3em] pointer-events-none drop-shadow-[0_0_5px_#00ff41]">
-             {activeData ? activeData.musicalKey.split(' ')[0] : 'SELECT'}
-          </text>
-          {activeData && (
-             <text textAnchor="middle" dy="1.8em" className="fill-gray-500 text-[9px] uppercase tracking-widest pointer-events-none">
-               {activeData.musicalKey.includes('Minor') ? 'Minor' : 'Major'}
-             </text>
-          )}
-
-          {/* Slices */}
-          {arcs.map((slice) => {
-            // Logic determines which slice is visually "active"
-            const isHovered = hoveredId === slice.data.id;
-            const isSelected = selectedId === slice.data.id;
-            
-            // If user is hovering something, that thing is active.
-            // If user is NOT hovering anything, the selected thing is active.
-            const isActive = isHovered || (hoveredId === null && isSelected);
-            
-            // Everything else is dimmed if there is an active state in play
-            const isDimmed = (hoveredId !== null || selectedId !== null) && !isActive;
-
-            const [centroidX, centroidY] = labelArc.centroid(slice);
-            
             return (
-              <motion.g 
-                key={slice.data.id} 
-                onClick={() => onSelect(slice.data.id)}
-                onMouseEnter={() => onHover(slice.data.id)}
-                onMouseLeave={() => onHover(null)}
-                className="cursor-pointer group"
-                animate={{ opacity: isDimmed ? 0.3 : 1 }}
-                transition={{ duration: 0.3, ease: "easeInOut" }}
-              >
-                <motion.path
-                  d={arcGenerator(slice) || undefined}
-                  className={`
-                    stroke-black stroke-[3px]
-                    ${isActive ? 'fill-[#00ff41]' : 'fill-[#0f172a] hover:fill-[#1e293b]'}
-                  `}
-                  animate={{ scale: isActive ? 1.05 : 1 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                />
-                
-                {/* Visual Indicator of Color using dedicated arc generator */}
-                <motion.path
-                   d={colorRingArc(slice) || undefined}
-                   className={`
-                    ${slice.data.colorGradientName.includes('red') ? 'fill-red-500' : ''}
-                    ${slice.data.colorGradientName.includes('yellow') ? 'fill-yellow-400' : ''}
-                    ${slice.data.colorGradientName.includes('cyan') ? 'fill-cyan-400' : ''}
-                    ${slice.data.colorGradientName.includes('green') ? 'fill-green-500' : ''}
-                    ${slice.data.colorGradientName.includes('blue') ? 'fill-blue-500' : ''}
-                    ${slice.data.colorGradientName.includes('teal') ? 'fill-teal-500' : ''}
-                    ${slice.data.colorGradientName.includes('violet') ? 'fill-violet-500' : ''}
-                    ${slice.data.colorGradientName.includes('indigo') ? 'fill-indigo-500' : ''}
-                    ${slice.data.colorGradientName.includes('pink') ? 'fill-pink-500' : ''}
-                    ${slice.data.colorGradientName.includes('rose') ? 'fill-rose-400' : ''}
-                    ${slice.data.colorGradientName.includes('crimson') ? 'fill-rose-700' : ''}
-                    ${slice.data.colorGradientName.includes('dark_blue') ? 'fill-blue-900' : ''}
-                   `}
-                   animate={{ scale: isActive ? 1.05 : 1 }}
-                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
-                />
-
-                <motion.text
-                  transform={`translate(${centroidX}, ${centroidY})`}
-                  textAnchor="middle"
-                  dy="0.35em"
-                  className={`
-                    text-xs font-bold pointer-events-none transition-colors duration-300
-                    ${isActive ? 'fill-black' : 'fill-hackerGreen drop-shadow-[0_0_5px_#00ff41]'}
-                  `}
-                  animate={{ scale: isActive ? 1.1 : 1 }}
-                  transition={{ type: "spring", stiffness: 300, damping: 20 }}
+              <React.Fragment key={`active-defs-${slice.data.id}`}>
+                <linearGradient
+                  id={`gradient-sweep-${slice.data.id}`}
+                  gradientUnits="userSpaceOnUse"
+                  x1={innerPoint.x}
+                  y1={innerPoint.y}
+                  x2={outerPoint.x}
+                  y2={outerPoint.y}
                 >
-                  {slice.data.musicalKey.split(' ')[0]}
-                </motion.text>
-                
-                {/* Minor/Major Indicator Subtext */}
-                <motion.text
-                   transform={`translate(${centroidX}, ${centroidY + 12})`}
-                   textAnchor="middle"
-                   className={`text-[8px] pointer-events-none uppercase ${isActive ? 'fill-gray-800' : 'fill-neonViolet drop-shadow-[0_0_2px_#D000FF]'}`}
-                   animate={{ scale: isActive ? 1.1 : 1 }}
-                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                  <stop offset="0%" stopColor="#050810" />
+                  <stop offset="42%" stopColor={slice.data.primaryColor} stopOpacity="0.48" />
+                  <stop offset="100%" stopColor={slice.data.secondaryColor} stopOpacity="0.98" />
+                </linearGradient>
+                <linearGradient
+                  id={`wave-band-base-${slice.data.id}`}
+                  gradientUnits="userSpaceOnUse"
+                  x1={innerPoint.x}
+                  y1={innerPoint.y}
+                  x2={outerPoint.x}
+                  y2={outerPoint.y}
                 >
-                   {slice.data.musicalKey.includes('Minor') ? 'min' : 'maj'}
-                </motion.text>
-
-                {/* Emotion Note Text */}
-                <motion.text
-                   transform={`translate(${centroidX}, ${centroidY + 24})`}
-                   textAnchor="middle"
-                   className={`text-[6px] pointer-events-none uppercase tracking-wider ${isActive ? 'fill-black/60 font-bold' : 'fill-gray-500'}`}
-                   animate={{ scale: isActive ? 1.1 : 1, opacity: isActive ? 1 : 0.4 }}
-                   transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                  <stop offset="0%" stopColor="#060a12" />
+                  <stop offset="55%" stopColor={slice.data.primaryColor} stopOpacity="0.26" />
+                  <stop offset="100%" stopColor={slice.data.primaryColor} stopOpacity="0.5" />
+                </linearGradient>
+                <linearGradient
+                  id={`aurora-glass-${slice.data.id}`}
+                  gradientUnits="userSpaceOnUse"
+                  x1={innerPoint.x}
+                  y1={innerPoint.y}
+                  x2={outerPoint.x}
+                  y2={outerPoint.y}
                 >
-                   {slice.data.emotion}
-                </motion.text>
-              </motion.g>
+                  <stop offset="0%" stopColor="#07101a" stopOpacity="0.94" />
+                  <stop offset="34%" stopColor={slice.data.primaryColor} stopOpacity="0.3" />
+                  <stop offset="70%" stopColor={slice.data.secondaryColor} stopOpacity="0.72" />
+                  <stop offset="100%" stopColor={slice.data.primaryColor} stopOpacity="0.92" />
+                </linearGradient>
+              </React.Fragment>
             );
           })}
+        </defs>
+
+        <g transform={`translate(${center}, ${center})`}>
+          {isResonating && activeData && (
+            <WaveformOverlay arousal={activeData.arousal} color={activeData.primaryColor} radius={radius + 10} />
+          )}
+
+          <circle r={radius + 5} fill="#02040a" stroke="#182131" strokeWidth="2" />
+
+          {arcs.map((slice, sliceIndex) => {
+            const isHovered = hoveredId === slice.data.id;
+            const isSelected = selectedId === slice.data.id;
+            const isActive = isHovered || (hoveredId === null && isSelected);
+            const indexDistance = activeIndex < 0 ? Number.POSITIVE_INFINITY : Math.abs(sliceIndex - activeIndex);
+            const circularDistance = Math.min(indexDistance, data.length - indexDistance);
+            const isNeighbor = circularDistance === 1;
+            const [labelX, labelY] = labelArc.centroid(slice);
+            const mode = slice.data.quality === 'Minor' ? 'MIN' : 'MAJ';
+            const activeFill =
+              activeWedgeStyle === 'gradient'
+                ? `url(#gradient-sweep-${slice.data.id})`
+                : activeWedgeStyle === 'wave'
+                  ? `url(#wave-band-base-${slice.data.id})`
+                  : `url(#aurora-glass-${slice.data.id})`;
+
+            return (
+              <g
+                key={slice.data.id}
+                onMouseEnter={() => onHover(slice.data.id)}
+                onMouseLeave={() => onHover(null)}
+                className="cursor-pointer"
+                opacity={activeId !== null && !isActive ? 0.72 : 1}
+              >
+                <title>{`${slice.data.displayName} — ${slice.data.emotion.replace('_', ' ')}`}</title>
+                {isActive && (activeWedgeStyle === 'gradient' || activeWedgeStyle === 'aurora') && (
+                  <path
+                    d={wedgeArc(slice) ?? undefined}
+                    fill={slice.data.primaryColor}
+                    fillOpacity={activeWedgeStyle === 'aurora' ? 0.18 : 0.1}
+                    filter="url(#active-wedge-bloom)"
+                    pointerEvents="none"
+                  />
+                )}
+                <motion.path
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${slice.data.displayName}: ${slice.data.emotion.replace('_', ' ')}`}
+                  aria-pressed={isSelected}
+                  data-testid={`circle-key-${slice.data.id}`}
+                  onClick={() => onSelect(slice.data.id)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelect(slice.data.id);
+                    }
+                  }}
+                  onFocus={() => onHover(slice.data.id)}
+                  onBlur={() => onHover(null)}
+                  d={wedgeArc(slice) ?? undefined}
+                  fill={isActive ? activeFill : '#0a101c'}
+                  stroke={isActive ? slice.data.primaryColor : '#02040a'}
+                  strokeWidth={isActive ? 2.3 : 3}
+                  filter={isActive ? 'url(#active-wedge-edge)' : undefined}
+                  vectorEffect="non-scaling-stroke"
+                  animate={{ scale: isSelected ? 1.055 : isHovered ? 1.03 : 1 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 24 }}
+                />
+                {isNeighbor && activeData && (
+                  <path
+                    d={wedgeArc(slice) ?? undefined}
+                    fill={activeData.primaryColor}
+                    fillOpacity="0.055"
+                    stroke={activeData.primaryColor}
+                    strokeOpacity="0.16"
+                    strokeWidth="1.2"
+                    pointerEvents="none"
+                  />
+                )}
+                <path
+                  d={rimArc(slice) ?? undefined}
+                  fill={slice.data.primaryColor}
+                  opacity={isActive ? 1 : isNeighbor ? 0.7 : 0.46}
+                  filter={isActive ? 'url(#active-wedge-edge)' : undefined}
+                  pointerEvents="none"
+                />
+
+                {isActive && activeWedgeStyle === 'wave' && (
+                  <g pointerEvents="none" fill="none" strokeLinecap="round">
+                    {[112, 128, 145].map((bandRadius, bandIndex) => (
+                      <path
+                        key={bandRadius}
+                        d={describeArcLine(slice.startAngle + 0.025, slice.endAngle - 0.025, bandRadius)}
+                        stroke={bandIndex === 1 ? slice.data.secondaryColor : slice.data.primaryColor}
+                        strokeWidth={bandIndex === 1 ? 2 : 1.25}
+                        strokeOpacity={0.34 + bandIndex * 0.14}
+                      />
+                    ))}
+                  </g>
+                )}
+
+                {isActive && activeWedgeStyle === 'aurora' && (
+                  <g pointerEvents="none" fill="none">
+                    <path
+                      d={describeArcLine(slice.startAngle + 0.035, slice.endAngle - 0.035, innerRadius + 5)}
+                      stroke="#ffffff"
+                      strokeWidth="1.4"
+                      strokeOpacity="0.34"
+                      strokeLinecap="round"
+                    />
+                    <path
+                      d={describeArcLine(slice.startAngle + 0.025, slice.endAngle - 0.025, radius - 5)}
+                      stroke={slice.data.primaryColor}
+                      strokeWidth="2.2"
+                      strokeOpacity="0.88"
+                      strokeLinecap="round"
+                      filter="url(#active-wedge-edge)"
+                    />
+                  </g>
+                )}
+
+                <g transform={`translate(${labelX}, ${labelY})`} pointerEvents="none">
+                  <text
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill={isActive ? '#f8fafc' : '#d8dee9'}
+                    stroke={isActive ? '#02040a' : 'none'}
+                    strokeWidth={isActive ? 1.8 : 0}
+                    paintOrder="stroke"
+                    fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                    fontSize="14"
+                    fontWeight="800"
+                  >
+                    {slice.data.root}
+                  </text>
+                  <text
+                    y="12"
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fill={isActive ? '#dbe4f0' : '#697386'}
+                    stroke={isActive ? '#02040a' : 'none'}
+                    strokeWidth={isActive ? 1.1 : 0}
+                    paintOrder="stroke"
+                    fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+                    fontSize="7"
+                    fontWeight="700"
+                    letterSpacing="1.2"
+                  >
+                    {mode}
+                  </text>
+                </g>
+              </g>
+            );
+          })}
+
+          <circle r={centerRadius + 7} fill="#050810" stroke="#111827" strokeWidth="3" />
+          <circle
+            r={centerRadius}
+            fill="url(#circle-center-fill)"
+            stroke={activeData?.primaryColor ?? '#394456'}
+            strokeOpacity="0.62"
+            strokeWidth="2"
+          />
+          <circle r="54" fill="none" stroke="#202a3a" strokeWidth="1" strokeDasharray="2 8" opacity="0.9" />
+
+          <g pointerEvents="none" aria-hidden="true">
+            {harmonicConnections.map((connection, index) => (
+              <motion.path
+                key={`${connection.label}-${activeData?.id ?? 'idle'}`}
+                d={connection.path}
+                fill="none"
+                stroke={connection.color}
+                strokeWidth={connection.dashed ? 1 : 1.5}
+                strokeDasharray={connection.dashed ? '3 5' : undefined}
+                initial={{ pathLength: 0, opacity: 0 }}
+                animate={{ pathLength: 1, opacity: connection.dashed ? 0.3 : 0.55 }}
+                transition={{ duration: 0.42, delay: index * 0.05, ease: 'easeOut' }}
+                filter="url(#circle-glow)"
+              />
+            ))}
+          </g>
+
+          <g pointerEvents="none" textAnchor="middle">
+            <text
+              y="-42"
+              fill="#778195"
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+              fontSize="8"
+              fontWeight="700"
+              letterSpacing="2.4"
+            >
+              THE CIRCLE
+            </text>
+            <text
+              y="10"
+              fill="#f8fafc"
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+              fontSize={activeKey.length > 2 ? 34 : 42}
+              fontWeight="800"
+              letterSpacing="-1"
+            >
+              {activeKey}
+            </text>
+            <text
+              y="29"
+              fill={activeData?.primaryColor ?? '#8b95a7'}
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+              fontSize="8"
+              fontWeight="800"
+              letterSpacing="2.8"
+            >
+              {activeMode}
+            </text>
+            <text
+              y="50"
+              fill="#8590a3"
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+              fontSize="7"
+              letterSpacing="1.2"
+            >
+              {activeEmotion.toUpperCase()}
+            </text>
+          </g>
         </g>
       </svg>
     </div>

@@ -22,8 +22,8 @@ const EmotionDetail: React.FC<EmotionDetailProps> = ({ data }) => {
         <div className={`absolute inset-0 bg-gradient-to-br ${data.tailwindGradient} opacity-5 group-hover:opacity-10 transition-opacity`} />
         <div className="relative z-10 flex justify-between items-start">
           <div>
-             <h2 className="text-4xl font-bold hacker-text mb-1 tracking-tighter">{data.musicalKey}</h2>
-             <p className="text-xl text-neonViolet font-light uppercase tracking-widest">{data.emotion.replace('_', ' ')}</p>
+             <h2 data-testid="selected-display-name" className="text-4xl font-bold hacker-text mb-1 tracking-tighter">{data.displayName}</h2>
+             <p data-testid="selected-emotion" className="text-xl text-neonViolet font-light uppercase tracking-widest">{data.emotion.replace('_', ' ')}</p>
           </div>
           <div className="text-right">
             <span className="inline-block px-3 py-1 bg-black border border-neonViolet text-[10px] text-neonViolet shadow-[0_0_5px_rgba(208,0,255,0.5)]">
@@ -44,7 +44,7 @@ const EmotionDetail: React.FC<EmotionDetailProps> = ({ data }) => {
           <span className="text-[10px] uppercase tracking-widest hacker-text-dim">VALENCE</span>
         </div>
         <div className="flex items-end gap-2">
-          <span className="text-3xl font-bold hacker-text">{data.valence}</span>
+          <span data-testid="selected-valence" className="text-3xl font-bold hacker-text">{data.valence}</span>
           <span className="text-[10px] hacker-text-dim mb-1.5">/ 1.0</span>
         </div>
         <div className="w-full bg-black border border-neonViolet/30 h-1 mt-3 overflow-hidden shadow-[inset_0_0_5px_rgba(0,0,0,1)]">
@@ -61,13 +61,13 @@ const EmotionDetail: React.FC<EmotionDetailProps> = ({ data }) => {
           <span className="text-[10px] uppercase tracking-widest hacker-text-dim">AROUSAL</span>
         </div>
         <div className="flex items-end gap-2">
-          <span className="text-3xl font-bold hacker-text">{data.arousal}</span>
+          <span data-testid="selected-arousal" className="text-3xl font-bold hacker-text">{data.arousal}</span>
           <span className="text-[10px] hacker-text-dim mb-1.5">/ 1.0</span>
         </div>
         <div className="w-full bg-black border border-neonViolet/30 h-1 mt-3 overflow-hidden shadow-[inset_0_0_5px_rgba(0,0,0,1)]">
           <div 
              className="h-full bg-hackerGreen shadow-[0_0_10px_#00ff41] transition-all duration-1000 ease-out" 
-             style={{ width: `${data.arousal * 100}%` }} 
+             style={{ width: `${((data.arousal + 1) / 2) * 100}%` }}
           />
         </div>
       </div>
